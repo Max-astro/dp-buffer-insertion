@@ -7,13 +7,43 @@
 
 struct BufLibCell {
   std::string name_;
+  float k_;
+  float b_;
 
-  float inputCap_;
+  BufLibCell(std::string name, float k, float b)
+      : name_(std::move(name)), k_(k), b_(b) {}
 
-  float CalcDelay(float trans, float load) {
-    // Dummy value
-    // TODO: read cell's delay LUT to calculate delay
-    return trans * load;
+  static constexpr float DEFAULT_TRANS = 0.01;
+
+  float CalcDelay(float loading) const {
+    // TODO: read cell's delay LUT to calculate NLDM delay
+    return k_ * loading + b_;
+  }
+};
+
+constexpr size_t Sizes[] = {1, 2, 4, 6, 8, 12, 16};
+constexpr float BufK[] = {6.012892, 2.484284, 1.429871, 1.022770,
+                          0.833302, 0.621765, 0.577835};
+constexpr float BufB[] = {0.055511, 0.086697, 0.094935, 0.078714,
+                          0.080080, 0.083737, 0.087594};
+constexpr float InvK[] = {4.474317, 2.352907, 1.345238, 0.956021,
+                          0.730050, 0.534276, 0.440415};
+constexpr float InvB[] = {0.016583, 0.015086, 0.016207, 0.016781,
+                          0.017008, 0.018485, 0.020665};
+
+struct BufInvLib {
+  std::vector<BufLibCell> bufs_;
+  std::vector<BufLibCell> invs_;
+
+  BufInvLib() {
+    char name[32];
+    for (int i = 0; i < 7; i++) {
+      snprintf(name, sizeof(name), "buf_X%zu", Sizes[i]);
+      bufs_.push_back(BufLibCell(name, BufK[i], BufB[i]));
+
+      snprintf(name, sizeof(name), "inv_X%zu", Sizes[i]);
+      invs_.push_back(BufLibCell(name, InvK[i], InvB[i]));
+    }
   }
 };
 
@@ -223,18 +253,20 @@ private:
 public:
   NodeMgr &nodeMgr_;
   const NetData &net_;
+  const BufLibCell &defaultBuf_;
 
-  ClusterSolver(NodeMgr &nodeMgr, const NetData &net)
-      : nodeMgr_(nodeMgr), net_(net) {}
+  ClusterSolver(NodeMgr &nodeMgr, const NetData &net,
+                const BufLibCell &defaultBuf)
+      : nodeMgr_(nodeMgr), net_(net), defaultBuf_(defaultBuf) {}
 
-  float GetVirtualBufCap() const {
+  // TODO: use typical buffer's input capacitance
+  float GetVirtualBufCap() const { return 0.02; }
+
+  float GetVirtualBufDelay() const { return 0.05; }
+
+  float GetBufDelayByLoading(float loading) const {
     // TODO: use typical buffer's input capacitance
-    return 0.02;
-  }
-
-  float GetVirtualBufDelay() const {
-    // TODO: use typical buffer's input capacitance
-    return 0.05;
+    return defaultBuf_.CalcDelay(loading);
   }
 
   // TODO: use more practical values
@@ -250,7 +282,8 @@ public:
     BufNode *buf = nodeMgr_.Alloc();
 
     buf->ty_ = BufNodeType::Buffer;
-    buf->rat_ = group.rat_ - GetVirtualBufDelay();
+    // buf->rat_ = group.rat_ - GetVirtualBufDelay();
+    buf->rat_ = group.rat_ - GetBufDelayByLoading(group.loading_);
     buf->inCap_ = GetVirtualBufCap();
     std::swap(group.sinks_, buf->children_);
 
@@ -298,17 +331,29 @@ public:
   }
 };
 
+struct DpSolver {
+  NodeMgr &nodeMgr_;
+  const BufNode *src_;
+  const BufInvLib &libCells_;
+
+  DpSolver(NodeMgr &nodeMgr, const BufNode *src, const BufInvLib &libCells)
+      : nodeMgr_(nodeMgr), src_(src), libCells_(libCells) {}
+};
+
 int main() {
   // std::cout << "Hello, World!" << std::endl;
+  BufInvLib lib;
+  BufLibCell defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+
   NetData net = NetData::GenRandomNet(30); // unbalanced
   NodeMgr nodeMgr(net.sinks_.size() * 10);
-  ClusterSolver solver(nodeMgr, net);
+  ClusterSolver solver(nodeMgr, net, defaultBuf);
   BufNode *src = solver.BuildBufferTree();
   src->EmitDOT("unbalanced.dot");
 
   {
     NetData net = NetData::GenRandomNet(30, 1.0f, 1.2f); // balanced
-    ClusterSolver solver(nodeMgr, net);
+    ClusterSolver solver(nodeMgr, net, defaultBuf);
     BufNode *src = solver.BuildBufferTree();
     src->EmitDOT("balanced.dot");
   }
