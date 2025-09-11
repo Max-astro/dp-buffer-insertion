@@ -19,26 +19,9 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Enable testing
-enable_testing()
-
-# Test executable
-add_executable(
-    cpu_test
-    tests/cpu_test.cpp
-)
-
-# Link test executable with Google Test
-target_link_libraries(
-    cpu_test
-    GTest::gtest_main
-)
-
-# Include directories for tests (so they can access src headers)
-target_include_directories(cpu_test PRIVATE src)
-
-# Discover and register tests
-include(GoogleTest)
-gtest_discover_tests(cpu_test)
 # Main executable
 add_executable(cpu src/cpu.cpp)
+
+# Enable testing and add tests subdirectory
+enable_testing()
+add_subdirectory(tests)
