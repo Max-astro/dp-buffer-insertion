@@ -28,6 +28,18 @@ void BufNode::EmitDOT(std::ofstream &os) const {
   }
 }
 
+std::vector<BufNode *> BufNode::TopologicalSort() const {
+  std::vector<BufNode *> sorted;
+  std::function<void(BufNode *)> dfs = [&](BufNode *node) {
+    for (auto child : node->children_) {
+      dfs(child);
+    }
+    sorted.push_back(node);
+  };
+  dfs(const_cast<BufNode *>(this));
+  return sorted;
+}
+
 BufNode *ClusterSolver::InsertBuffer(NodeGroup &group) {
   BufNode *buf = nodeMgr_.Alloc();
 
@@ -123,14 +135,16 @@ void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
     if (!SimilarNodes(*it, node)) {
       solutions.insert(node);
     }
-    return;
+  } else {
+    // check if the node is dominated by the previous (larger RAT) node
+    it = std::prev(it);
+    if (CheckDominate(*it, node)) {
+      return;
+    }
   }
 
-  auto prev = std::prev(it);
-  if (CheckDominate(*prev, node)) {
-    return;
-  }
-
+  // The rest of elements's RAT < node's RAT,
+  // prune elements are dominated by current node
   while (it != solutions.end()) {
     if (CheckDominate(node, *it)) {
       it = solutions.erase(it);
@@ -156,54 +170,4 @@ void DpSolver::MergeChildSolutions(
       MaintainFrontier(dup, merged);
     }
   }
-}
-
-int main() {
-  // std::cout << "Hello, World!" << std::endl;
-  BufInvLib lib;
-  BufLibCell defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-
-  NetData net = NetData::GenRandomNet(30); // unbalanced
-  NodeMgr nodeMgr(net.sinks_.size() * 10);
-  ClusterSolver solver(nodeMgr, net, defaultBuf);
-  BufNode *src = solver.BuildBufferTree();
-  src->EmitDOT("unbalanced.dot");
-
-  {
-    BufNodeRbTree rbt;
-
-    std::function<void(BufNode *)> dfs = [&](BufNode *src) {
-      rbt.insert(src);
-      for (auto *node : src->children_) {
-        dfs(node);
-      };
-    };
-
-    dfs(src);
-
-    for (auto *node : rbt) {
-      printf("%u %f\n", node->uid_, node->rat_);
-    }
-
-    auto n297 = nodeMgr.GetNode(297);
-    {
-      auto it = rbt.lower_bound(n297);
-      assert(it == rbt.begin());
-    }
-
-    auto node = nodeMgr.Alloc();
-    node->rat_ = 71.0;
-    auto it = rbt.lower_bound(node);
-
-    bool m = 1 || ((std::prev(rbt.begin()) == rbt.end()));
-    printf("\nit %u %f, m %d\n", (*it)->uid_, (*it)->rat_, m);
-  }
-
-  {
-    NetData net = NetData::GenRandomNet(30, 1.0f, 1.2f); // balanced
-    ClusterSolver solver(nodeMgr, net, defaultBuf);
-    BufNode *src = solver.BuildBufferTree();
-    src->EmitDOT("balanced.dot");
-  }
-  return 0;
 }

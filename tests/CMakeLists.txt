@@ -6,14 +6,12 @@ add_executable(
     cpu_test.cpp
 )
 
-# Link test executable with Google Test
+# Link test executable with Google Test and buffering library
 target_link_libraries(
     cpu_test
     GTest::gtest_main
+    buffering_lib
 )
-
-# Include directories for tests (so they can access src headers)
-target_include_directories(cpu_test PRIVATE ../src)
 
 # Discover and register tests
 include(GoogleTest)

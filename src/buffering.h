@@ -118,6 +118,8 @@ struct BufNode {
     inCap_ = libCell->inCap_;
   }
 
+  std::vector<BufNode *> TopologicalSort() const;
+
   void EmitDOT(std::string filename = "buffer_tree.dot") const;
   void EmitDOT(std::ofstream &os) const;
 };
@@ -245,9 +247,10 @@ inline auto NodeRatLT = [](BufNode *a, BufNode *b) {
 };
 
 inline auto NodeRatGT = [](BufNode *a, BufNode *b) {
-  if (std::abs(a->rat_ - b->rat_) < 1e-7) {
-    return a->uid_ > b->uid_;
-  }
+  /// For set comparsion has a stable result, shouldn't compare uid
+  // if (std::abs(a->rat_ - b->rat_) < 1e-7) {
+  //   return a->uid_ > b->uid_;
+  // }
   return a->rat_ > b->rat_;
 };
 
@@ -331,14 +334,14 @@ struct DpSolver {
 
   void InitDp(const BufNode *node);
 
-  bool SimilarNodes(const BufNode *a, const BufNode *b) {
+  bool SimilarNodes(const BufNode *a, const BufNode *b) const {
     bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.minDelay_;
     bool inCapEq = std::abs(a->inCap_ - b->inCap_) < libCells_.minCap_;
     return ratEq && inCapEq;
   }
 
   // a dom b
-  bool CheckDominate(const BufNode *a, const BufNode *b) {
+  bool CheckDominate(const BufNode *a, const BufNode *b) const {
     if (SimilarNodes(a, b)) {
       return true;
     }

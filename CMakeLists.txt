@@ -20,7 +20,11 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # Main executable
-add_executable(cpu src/cpu.cpp)
+add_library(buffering_lib src/cpu.cpp)
+target_include_directories(buffering_lib PUBLIC src)
+
+add_executable(cpu src/main.cpp)
+target_link_libraries(cpu buffering_lib)
 
 # Enable testing and add tests subdirectory
 enable_testing()
