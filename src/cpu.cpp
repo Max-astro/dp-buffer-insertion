@@ -1,7 +1,7 @@
 #include "buffering.h"
 
-void BufNode::EmitDOT(std::string filename) const {
-  std::ofstream os(filename.c_str(), std::ofstream::out);
+void BufNode::EmitDOT(const char *filename) const {
+  std::ofstream os(filename, std::ofstream::out);
 
   os << "digraph {\n";
   EmitDOT(os);
@@ -16,9 +16,11 @@ void BufNode::EmitDOT(std::ofstream &os) const {
     loading += child->inCap_;
   }
 
-  os << uid_ << " [label=\"" << GetBufNodeTypeStr(ty_) << "\n"
-     << uid_ << "\nRAT: " << rat_ << "\nInCap: " << inCap_
-     << "\nLoading: " << loading
+  std::string driverName = driver_ ? "\n" + driver_->name_ : "";
+
+  os << uid_ << " [label=\"" << uid_ << "\n"
+     << GetBufNodeTypeStr(ty_) << driverName << "\nRAT: " << rat_
+     << "\nInCap: " << inCap_ << "\nLoading: " << loading
      << "\", shape=ellipse, color=" << GetBufNodeTypeColor(ty_) << "]\n";
   for (auto child : children_) {
     os << uid_ << " -> " << child->uid_ << " [style=solid]\n";
@@ -26,6 +28,28 @@ void BufNode::EmitDOT(std::ofstream &os) const {
   for (auto child : children_) {
     child->EmitDOT(os);
   }
+}
+
+bool BufNode::CheckPhase(bool inv) const {
+  std::function<bool(const BufNode *)> dfs =
+      [&dfs](const BufNode *node) -> bool {
+    if (node->ty_ == BufNodeType::Sink) {
+      // TODO: sink might have negative phase when we perform rebuffer
+      return false;
+    }
+
+    bool phase = dfs(node->children_[0]);
+    for (int i = 1; i < node->children_.size(); i++) {
+      if (phase != dfs(node->children_[i])) {
+        node->EmitDOT("phase_error.dot");
+        assert(0);
+      }
+    }
+
+    return node->ty_ == BufNodeType::Inverter ? !phase : phase;
+  };
+
+  return dfs(this) == inv;
 }
 
 std::vector<BufNode *> BufNode::TopologicalSort() const {
@@ -92,36 +116,156 @@ BufNode *ClusterSolver::BuildBufferTree() {
   return src;
 }
 
-void DpSolver::InitDp(const BufNode *node) {
-  if (node->ty_ == BufNodeType::Sink) {
-    return;
-  }
+DpSolver::BufNodeVec2 DpSolver::InitDp(const BufNode *node) {
+  // if (node->ty_ == BufNodeType::Sink) {
+  //   return;
+  // }
 
   BufNodeVec2 dp = {std::vector<BufNode *>{}, std::vector<BufNode *>{}};
   dp[0].reserve(DP_SIZE);
   dp[1].reserve(DP_SIZE);
-  dp_.emplace(node->uid_, std::move(dp));
+  // dp_.emplace(node->uid_, std::move(dp));
+
+  return dp;
+}
+
+void DpSolver::GenNodeSolutions(const BufNode *node) {
+  if (node->ty_ == BufNodeType::Sink) {
+    return;
+  }
+
+  // `Candidates` means buffer/inverter libcell not yet determined
+  // `Solutions` means this node is a valid solution
+  auto solutions = InitDp(node);
+  auto &posCandidates = solutions[0];
+  auto &negCandidates = solutions[1];
+
+  // Sink nodes will be skipped during the merge
+  // so we need to add them to the candidates
+  bool hasSink = false;
+  posCandidates.push_back(nodeMgr_.Alloc());
+  for (auto child : node->children_) {
+    if (child->ty_ == BufNodeType::Sink) {
+      posCandidates[0]->AddChild(child);
+      hasSink = true;
+    }
+  }
+
+  // If any of the child nodes is a sink
+  // then we cannot construct negative solution
+  // TODO: sinks might have negative phase when we perform rebuffer
+  if (!hasSink) {
+    negCandidates.push_back(nodeMgr_.Alloc());
+  }
 
   for (auto child : node->children_) {
-    InitDp(child);
+    if (child->ty_ != BufNodeType::Buffer) {
+      continue;
+    }
+
+    { // Debug: check phase
+      for (auto s : GetPosSolutions(child)) {
+        assert(s->CheckPhase(false));
+      }
+      for (auto s : GetNegSolutions(child)) {
+        assert(s->CheckPhase(true));
+      }
+    }
+
+    MergeChildSolutions(posCandidates, GetPosSolutions(child));
+    MergeChildSolutions(negCandidates, GetNegSolutions(child));
+  }
+
+  {
+    // Debug: check fanout size
+    for (auto s : posCandidates) {
+      assert(s->children_.size() == node->children_.size());
+    }
+    for (auto s : negCandidates) {
+      assert(s->children_.size() == node->children_.size());
+    }
+  }
+
+  auto posDup = nodeMgr_.Dup(posCandidates);
+  auto negDup = nodeMgr_.Dup(negCandidates);
+  // To generate positive solutions, we need to insert buffer to positive
+  // candidates and insert inverter to negative candidates;
+  // Or, we can remove buffer from positive candidates
+  solutions[0] = GenSolutionsByPhase(posCandidates, negCandidates, false);
+  // For negative solutions, we need to insert buffer to negative candidates
+  // and insert inverter to positive candidates.
+  // Or, we can remove buffer from negative candidates
+  solutions[1] = GenSolutionsByPhase(negDup, posDup, true);
+
+  {
+    // Debug: check phase
+    for (auto s : solutions[0]) {
+      if (!s->CheckPhase(false)) {
+        s->EmitDOT("pos_phase_error.dot");
+        assert(0);
+      }
+    }
+    for (auto s : solutions[1]) {
+      if (!s->CheckPhase(true)) {
+        s->EmitDOT("neg_phase_error.dot");
+        assert(0);
+      }
+    }
+  }
+
+  dp_.emplace(node->uid_, std::move(solutions));
+}
+
+// Nodes in both pos and neg vectors will be modified
+BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
+                                         BufNodeVec &insertInv, bool inv) {
+  // All new solutions will be stored in the rbt
+  // in order to keep the Pareto frontier easier.
+  BufNodeRbTree rbt;
+
+  {
+    for (auto s : insertBuf) {
+      assert(s->ty_ == BufNodeType::Init);
+    }
+    for (auto s : insertInv) {
+      assert(s->ty_ == BufNodeType::Init);
+    }
+  }
+
+  // GenRemoveBufferSolutions(insertBuf, rbt);
+
+  InsertLibCell(insertBuf, rbt, false);
+  InsertLibCell(insertInv, rbt, true);
+
+  BufNodeVec ret;
+  ret.reserve(rbt.size());
+  std::copy(rbt.begin(), rbt.end(), std::back_inserter(ret));
+
+  return ret;
+}
+
+void DpSolver::GenRemoveBufferSolutions(BufNodeVec &candidates,
+                                        BufNodeRbTree &rbt) {
+  for (auto *s : candidates) {
+    auto *dup = nodeMgr_.Dup(s);
+    dup->RemoveBuffer();
+    MaintainFrontier(dup, rbt);
   }
 }
 
-// void ProcessNode(const BufNode *node) {
-//   if (node->ty_ == BufNodeType::Sink) {
-//     return;
-//   }
-
-//   for (auto child : node->children_) {
-//     if (child->ty_ == BufNodeType::Sink) {
-//       continue;
-//     } else if (child->ty_ == BufNodeType::Buffer) {
-//       auto& posSolutions = dp_[child->uid_][0];
-//       auto& negSolutions = dp_[child->uid_][1];
-//     }
-//     ProcessNode(child);
-//   }
-// }
+void DpSolver::InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt,
+                             bool inv) {
+  for (auto s : candidates) {
+    auto const &lib = inv ? libCells_.invs_ : libCells_.bufs_;
+    for (int i = 0; i < lib.size(); i++) {
+      // Reuse the original node during the final iteration.
+      BufNode *node = (i == lib.size() - 1) ? s : nodeMgr_.Dup(s);
+      node->SetLibCell(&lib[i], inv);
+      // assert(node->CheckPhase(inv));
+      MaintainFrontier(node, rbt);
+    }
+  }
+}
 
 void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
   if (solutions.empty()) {
@@ -147,6 +291,7 @@ void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
   // prune elements are dominated by current node
   while (it != solutions.end()) {
     if (CheckDominate(node, *it)) {
+      nodeMgr_.Recycle(*it);
       it = solutions.erase(it);
     } else {
       ++it;
@@ -156,13 +301,13 @@ void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
   solutions.insert(node);
 }
 
-void DpSolver::MergeChildSolutions(
-    std::vector<BufNode *> &srcSolutions,
-    const std::vector<BufNode *> &childSolutions) {
-  // std::vector<BufNode *> merged;
-  // merged.reserve(DP_SIZE * 4);
-  BufNodeRbTree merged;
+void DpSolver::MergeChildSolutions(BufNodeVec &srcSolutions,
+                                   const BufNodeVec &childSolutions) {
+  if (srcSolutions.empty()) {
+    return;
+  }
 
+  BufNodeRbTree merged;
   for (auto srcS : srcSolutions) {
     for (auto childS : childSolutions) {
       auto *dup = nodeMgr_.Dup(srcS);
@@ -170,4 +315,40 @@ void DpSolver::MergeChildSolutions(
       MaintainFrontier(dup, merged);
     }
   }
+
+  srcSolutions.clear();
+  srcSolutions.reserve(merged.size());
+  std::copy(merged.begin(), merged.end(), std::back_inserter(srcSolutions));
+}
+
+void DpSolver::Solve() {
+  for (auto *node : src_->TopologicalSort()) {
+    if (node->ty_ == BufNodeType::Src) {
+      continue;
+    }
+    GenNodeSolutions(node);
+  }
+
+  // Source node equals to net's driver pin
+  // we only need positive solutions
+  auto solutions = InitDp(src_);
+  auto *root = nodeMgr_.Alloc();
+  root->ty_ = BufNodeType::Src;
+  for (auto child : src_->children_) {
+    if (child->ty_ == BufNodeType::Sink) {
+      root->AddChild(child);
+    }
+  }
+  solutions[0].push_back(root);
+  for (auto *child : src_->children_) {
+    if (child->ty_ == BufNodeType::Sink) {
+      continue;
+    }
+    MergeChildSolutions(solutions[0], GetPosSolutions(child));
+  }
+  dp_.emplace(src_->uid_, std::move(solutions));
+}
+
+BufNode *DpSolver::GetBestSolution() const {
+  return dp_.at(src_->uid_)[0].front();
 }

@@ -4,6 +4,7 @@
 #include <iostream>
 #include <random>
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 struct BufLibCell {
@@ -90,7 +91,7 @@ struct BufNode {
   float inCap_ = 0.0;
   float loading_ = 0.0;
   float rat_ = std::numeric_limits<float>::max();
-  BufLibCell *driver_;
+  const BufLibCell *driver_;
   std::vector<BufNode *> children_;
 
   BufNode(uint32_t uid) : uid_(uid), driver_(nullptr) {}
@@ -112,17 +113,31 @@ struct BufNode {
     children_.push_back(child);
   }
 
-  void SetLibCell(BufLibCell *libCell) {
+  void SetLibCell(const BufLibCell *libCell, bool isInv) {
     driver_ = libCell;
+    ty_ = isInv ? BufNodeType::Inverter : BufNodeType::Buffer;
     rat_ -= libCell->CalcDelay(loading_);
     inCap_ = libCell->inCap_;
   }
 
+  void RemoveBuffer() {
+    ty_ = BufNodeType::Removed;
+    // If buf/inv is removed, it means current node's fanouts will be driven
+    // directly by its parent, so its input capacitance is equal to its loading
+    inCap_ = loading_;
+  }
+
   std::vector<BufNode *> TopologicalSort() const;
 
-  void EmitDOT(std::string filename = "buffer_tree.dot") const;
+  // Debug utils
+  bool CheckPhase(bool inv) const;
+  bool CheckLoading() const;
+
+  void EmitDOT(const char *filename = "buffer_tree.dot") const;
   void EmitDOT(std::ofstream &os) const;
 };
+
+using BufNodeVec = std::vector<BufNode *>;
 
 inline const char *GetBufNodeTypeColor(BufNodeType ty) {
   switch (ty) {
@@ -145,7 +160,7 @@ struct NodeMgr {
   size_t total_;
   size_t allocCount_ = 0;
   std::vector<BufNode *> freeNodes_;
-  std::vector<BufNode *> usedNodes_;
+  std::unordered_set<BufNode *> usedNodes_;
 
   NodeMgr(size_t total) : total_(total) {
     freeNodes_.reserve(total_);
@@ -177,7 +192,7 @@ struct NodeMgr {
     }
     BufNode *node = freeNodes_.back();
     freeNodes_.pop_back();
-    usedNodes_.push_back(node);
+    usedNodes_.insert(node);
     return node;
   }
 
@@ -185,16 +200,27 @@ struct NodeMgr {
     BufNode *dup = Alloc();
     dup->ty_ = node->ty_;
     dup->inCap_ = node->inCap_;
+    dup->loading_ = node->loading_;
     dup->rat_ = node->rat_;
     dup->driver_ = node->driver_;
     dup->children_ = node->children_;
     return dup;
   }
 
-  //   void Recycle(BufNode *node) {
-  //     node->Reset();
-  //     freeNodes_.push_back(node);
-  //   }
+  std::vector<BufNode *> Dup(const std::vector<BufNode *> &nodes) {
+    std::vector<BufNode *> dupNodes;
+    dupNodes.reserve(nodes.size());
+    for (auto node : nodes) {
+      dupNodes.push_back(Dup(node));
+    }
+    return dupNodes;
+  }
+
+  void Recycle(BufNode *node) {
+    node->Reset();
+    usedNodes_.erase(node);
+    freeNodes_.push_back(node);
+  }
 
   // For debug only
   BufNode *GetNode(uint32_t uid) {
@@ -319,7 +345,6 @@ struct DpSolver {
   const BufNode *src_;
   const BufInvLib &libCells_;
 
-  using BufNodeVec = std::vector<BufNode *>;
   using BufNodeVec2 = std::array<BufNodeVec, 2>;
 
   // 0: positive, 1: negative
@@ -328,11 +353,9 @@ struct DpSolver {
   static constexpr size_t DP_SIZE = 16;
 
   DpSolver(NodeMgr &nodeMgr, const BufNode *src, const BufInvLib &libCells)
-      : nodeMgr_(nodeMgr), src_(src), libCells_(libCells) {
-    InitDp(src);
-  }
+      : nodeMgr_(nodeMgr), src_(src), libCells_(libCells) {}
 
-  void InitDp(const BufNode *node);
+  BufNodeVec2 InitDp(const BufNode *node);
 
   bool SimilarNodes(const BufNode *a, const BufNode *b) const {
     bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.minDelay_;
@@ -351,9 +374,24 @@ struct DpSolver {
     return ratGt && inCapLt;
   }
 
-  // void ProcessNode(const BufNode *node);
-  void MaintainFrontier(BufNode *node, BufNodeRbTree &solutions);
+  const BufNodeVec &GetPosSolutions(const BufNode *node) const {
+    return dp_.at(node->uid_)[0];
+  }
 
-  void MergeChildSolutions(std::vector<BufNode *> &srcSolutions,
-                           const std::vector<BufNode *> &childSolutions);
+  const BufNodeVec &GetNegSolutions(const BufNode *node) const {
+    return dp_.at(node->uid_)[1];
+  }
+
+  void GenNodeSolutions(const BufNode *node);
+  BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv,
+                                 bool inv);
+  void GenRemoveBufferSolutions(BufNodeVec &candidates, BufNodeRbTree &rbt);
+  void InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt, bool inv);
+  void MaintainFrontier(BufNode *node, BufNodeRbTree &rbt);
+
+  void MergeChildSolutions(BufNodeVec &srcSolutions,
+                           const BufNodeVec &childSolutions);
+
+  void Solve();
+  BufNode *GetBestSolution() const;
 };

@@ -23,8 +23,23 @@ FetchContent_MakeAvailable(googletest)
 add_library(buffering_lib src/cpu.cpp)
 target_include_directories(buffering_lib PUBLIC src)
 
+# Set debug flags for Debug build type
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+# Set default build type to Debug if not specified
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug)
+endif()
+
 add_executable(cpu src/main.cpp)
 target_link_libraries(cpu buffering_lib)
+
+# # Add debug-specific settings for the executable
+# if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+#     target_compile_definitions(cpu PRIVATE DEBUG_BUILD)
+#     target_compile_options(cpu PRIVATE -Wall -Wextra -Wpedantic)
+# endif()
 
 # Enable testing and add tests subdirectory
 enable_testing()
