@@ -1,0 +1,16 @@
+[package]
+name = "liberty-helper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+liberty-db = "0.16"
+plotly = "0.13.5"
+cxx = "1"
+
+[lib]
+name = "liberty_helper"
+crate-type = ["staticlib", "rlib", "cdylib"]
+
+[build-dependencies]
+cxx-build = "1"
