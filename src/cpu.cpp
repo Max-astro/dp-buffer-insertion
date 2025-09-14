@@ -211,30 +211,34 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
       continue;
     }
 
-    // { // Debug: check phase
-    //   for (auto s : GetPosSolutions(child)) {
-    //     assert(s->CheckPhase(false));
-    //   }
-    //   for (auto s : GetNegSolutions(child)) {
-    //     assert(s->CheckPhase(true));
-    //   }
-    // }
+#if ENABLE_ASSERT
+    { // Debug: check phase
+      for (auto s : GetPosSolutions(child)) {
+        assert(s->CheckPhase(false));
+      }
+      for (auto s : GetNegSolutions(child)) {
+        assert(s->CheckPhase(true));
+      }
+    }
+#endif
 
     MergeChildSolutions(posCandidates, GetPosSolutions(child));
     MergeChildSolutions(negCandidates, GetNegSolutions(child));
   }
 
-  // {
-  //   // Debug: check fanout size
-  //   for (auto s : posCandidates) {
-  //     assert(s->children_.size() == node->children_.size());
-  //     assert(s->loading_ > 0.0);
-  //   }
-  //   for (auto s : negCandidates) {
-  //     assert(s->children_.size() == node->children_.size());
-  //     assert(s->loading_ > 0.0);
-  //   }
-  // }
+#if ENABLE_ASSERT
+  {
+    // Debug: check fanout size
+    for (auto s : posCandidates) {
+      assert(s->children_.size() == node->children_.size());
+      assert(s->loading_ > 0.0);
+    }
+    for (auto s : negCandidates) {
+      assert(s->children_.size() == node->children_.size());
+      assert(s->loading_ > 0.0);
+    }
+  }
+#endif
 
   auto posDup = nodeMgr_.Dup(posCandidates);
   auto negDup = nodeMgr_.Dup(negCandidates);
@@ -247,21 +251,23 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
   // Or, we can remove buffer from negative candidates
   solutions[1] = GenSolutionsByPhase(negDup, posDup);
 
-  // {
-  //   // Debug: check phase
-  //   for (auto s : solutions[0]) {
-  //     if (!s->CheckPhase(false)) {
-  //       s->EmitDOT("pos_phase_error.dot");
-  //       assert(0);
-  //     }
-  //   }
-  //   for (auto s : solutions[1]) {
-  //     if (!s->CheckPhase(true)) {
-  //       s->EmitDOT("neg_phase_error.dot");
-  //       assert(0);
-  //     }
-  //   }
-  // }
+#if ENABLE_ASSERT
+  {
+    // Debug: check phase
+    for (auto s : solutions[0]) {
+      if (!s->CheckPhase(false)) {
+        s->EmitDOT("pos_phase_error.dot");
+        assert(0);
+      }
+    }
+    for (auto s : solutions[1]) {
+      if (!s->CheckPhase(true)) {
+        s->EmitDOT("neg_phase_error.dot");
+        assert(0);
+      }
+    }
+  }
+#endif
 
   // std::lock_guard<std::mutex> lock(*mutex_);
   dp_.emplace(node->uid_, std::move(solutions));
@@ -274,6 +280,7 @@ BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
   // in order to keep the Pareto frontier easier.
   BufNodeRbTree rbt;
 
+#if ENABLE_ASSERT
   {
     for (auto s : insertBuf) {
       assert(s->ty_ == BufNodeType::Init);
@@ -282,6 +289,7 @@ BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
       assert(s->ty_ == BufNodeType::Init);
     }
   }
+#endif
 
   GenRemoveBufferSolutions(insertBuf, rbt);
 
@@ -320,11 +328,13 @@ void DpSolver::InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt,
 }
 
 void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
+#if ENABLE_ASSERT
   assert(node);
   assert(node->rat_ < std::numeric_limits<float>::max());
   assert(node->ty_ == BufNodeType::Init || node->ty_ == BufNodeType::Src ||
          node->inCap_ > 0);
   assert(node->ty_ != BufNodeType::Sink || node->loading_ > 0);
+#endif
 
   if (solutions.empty()) {
     solutions.insert(node);
@@ -445,4 +455,25 @@ BufNode *DpSolver::GetBestSolution() const {
     }
   }
   return best;
+}
+
+void DpSolver::ReportImprovement(const NetData &net, const BufNode *result,
+                                 const BufLibCell &driverArc) {
+  float oldRat = std::numeric_limits<float>::max();
+  float oldLoading = 0.0;
+  for (auto &sink : net.sinks_) {
+    oldRat = std::min(oldRat, sink.rat_);
+    oldLoading += sink.inputCap_;
+  }
+  float oldDelay = driverArc.CalcDelay(DelayType::Rise,
+                                       BufInvLib::DEFAULT_TRANS, oldLoading);
+  oldRat -= oldDelay;
+
+  float newDelay = driverArc.CalcDelay(
+      DelayType::Rise, BufInvLib::DEFAULT_TRANS, result->loading_);
+
+  printf("Orignal Net's driver pin: RAT = %f, loading = %f, delay = %f;\n"
+         "After buffer insertion  : RAT = %f, loading = %f, delay = %f\n\n",
+         oldRat, oldLoading, oldDelay, result->rat_, result->loading_,
+         newDelay);
 }

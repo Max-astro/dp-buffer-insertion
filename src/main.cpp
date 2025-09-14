@@ -44,11 +44,13 @@ void RunExample() {
     printf("Time taken to DP algorithm: %f seconds\n",
            duration.count() / 1000000.0);
 
+    DpSolver::ReportImprovement(net, bestSolution, defaultBuf);
     bestSolution->EmitDOT("unbalanced_dp.dot");
   }
 
   {
-    NetData net = NetData::GenRandomNet(100, 1.0f, 1.2f); // balanced
+    NetData net =
+        NetData::GenRandomNet(100, 1.0f, 1.2f, 0.001, 0.01); // balanced
     NodeMgr nodeMgr(net.sinks_.size() * 100);
     ClusterSolver solver(nodeMgr, net, defaultBuf);
     BufNode *src = solver.BuildBufferTree();
@@ -64,13 +66,14 @@ void RunExample() {
     printf("Time taken to DP algorithm: %f seconds\n",
            duration.count() / 1000000.0);
 
+    DpSolver::ReportImprovement(net, bestSolution, defaultBuf);
     bestSolution->EmitDOT("balanced_dp.dot");
   }
 }
 
 int main(int argc, char **argv) {
   RunExample();
-  
+
   // auto start = std::chrono::high_resolution_clock::now();
 
   // BufInvLib lib;

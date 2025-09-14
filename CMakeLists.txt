@@ -14,13 +14,16 @@ FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
 )
+
 # For Windows: Prevent overriding the parent project's compiler/linker settings
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+# For debugging
+set(ENABLE_ASSERT 1)
 
 # Path to the Rust crate
-set(RUST_CRATE_DIR "${CMAKE_SOURCE_DIR}/liberty-helper")  # adjust as needed
+set(RUST_CRATE_DIR "${CMAKE_SOURCE_DIR}/liberty-helper") # adjust as needed
 
 set(TASKFLOW_DIR "${CMAKE_SOURCE_DIR}/taskflow")
 
@@ -35,13 +38,13 @@ endif()
 
 # Artifacts we consume
 set(RUST_TARGET_DIR "${RUST_CRATE_DIR}/target/${RUST_PROFILE}")
-set(RUST_STATIC     "${RUST_TARGET_DIR}/libliberty_helper.a")
+set(RUST_STATIC "${RUST_TARGET_DIR}/libliberty_helper.a")
 
 # cxx bridge files copied by build.rs into a stable include dir
 set(RUST_INCLUDE_DIR "${RUST_CRATE_DIR}/include")
-set(RUST_CXX_HEADER  "${RUST_INCLUDE_DIR}/liberty_helper.rs.h")
+set(RUST_CXX_HEADER "${RUST_INCLUDE_DIR}/liberty_helper.rs.h")
 set(RUST_CXX_UMBRELLA "${RUST_INCLUDE_DIR}/liberty_helper.hpp")
-set(RUST_CXX_SHIM    "${RUST_INCLUDE_DIR}/liberty_helper.rs.cc")
+set(RUST_CXX_SHIM "${RUST_INCLUDE_DIR}/liberty_helper.rs.cc")
 
 # Build the Rust crate (produces staticlib + copies cxx shim/header to include/)
 add_custom_command(
@@ -69,12 +72,12 @@ target_include_directories(buffering_lib PUBLIC src PRIVATE ${RUST_INCLUDE_DIR} 
 target_link_libraries(buffering_lib PRIVATE liberty_helper)
 
 # Set debug flags for Debug build type
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG -DENABLE_ASSERT=${ENABLE_ASSERT}")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Set default build type to Debug if not specified
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug)
+  set(CMAKE_BUILD_TYPE Debug)
 endif()
 
 # Main executable
@@ -83,11 +86,10 @@ add_dependencies(cpu liberty_helper_rust)
 target_include_directories(cpu PRIVATE "${RUST_INCLUDE_DIR}")
 target_link_libraries(cpu PRIVATE liberty_helper buffering_lib)
 
-
 # # Add debug-specific settings for the executable
 # if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-#     target_compile_definitions(cpu PRIVATE DEBUG_BUILD)
-#     target_compile_options(cpu PRIVATE -Wall -Wextra -Wpedantic)
+# target_compile_definitions(cpu PRIVATE DEBUG_BUILD)
+# target_compile_options(cpu PRIVATE -Wall -Wextra -Wpedantic)
 # endif()
 
 # Enable testing and add tests subdirectory

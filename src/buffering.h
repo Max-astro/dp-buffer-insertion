@@ -220,7 +220,7 @@ struct NodeMgr {
   }
 
   void Realloc(size_t total) {
-    printf("NodeMgr::Realloc: %zu -> %zu\n", total_, total);
+    // printf("NodeMgr::Realloc: %zu -> %zu\n", total_, total);
 
     total_ = total;
     freeNodes_.reserve(total_);
@@ -459,4 +459,7 @@ struct DpSolver {
 
   void Solve(bool multiThread = false);
   BufNode *GetBestSolution() const;
+
+  static void ReportImprovement(const NetData &net, const BufNode *result,
+                                const BufLibCell &driverArc);
 };
