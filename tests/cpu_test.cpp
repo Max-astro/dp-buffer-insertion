@@ -24,8 +24,7 @@ protected:
 // Basic test example - Testing the GetBufNodeTypeStr function
 TEST(BufferingTest, DummyTestExampleP) {}
 
-// Test using the test fixture
-TEST_F(CpuTest, ParetoFrontierTest_Simple) {
+TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   NetData net = NetData::GenRandomNet(30);
   BufInvLib lib;
 
@@ -38,6 +37,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
   BufNodeRbTree rbt;
 
   auto *p1 = nodeMgr_.Alloc();
+  p1->ty_ = BufNodeType::Buffer;
   p1->rat_ = 10.0;
   p1->inCap_ = 0.1;
   dpSolver.MaintainFrontier(p1, rbt);
@@ -46,6 +46,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
 
   // p2 is dominated by p1
   auto *p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
   p->rat_ = 9.0;
   p->inCap_ = 0.2;
   dpSolver.MaintainFrontier(p, rbt);
@@ -55,6 +56,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
 
   // new element in the frontier
   p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
   p->rat_ = 9.0;
   p->inCap_ = 0.05;
   dpSolver.MaintainFrontier(p, rbt);
@@ -63,6 +65,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
 
   // new element in the frontier
   p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
   p->rat_ = 12.0;
   p->inCap_ = 0.35;
   dpSolver.MaintainFrontier(p, rbt);
@@ -71,6 +74,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
 
   // new element dominate all existing elements
   p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
   p->rat_ = 15.0;
   p->inCap_ = 0.01;
   dpSolver.MaintainFrontier(p, rbt);
@@ -80,6 +84,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
 
   // similar element
   p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
   p->rat_ = 15.001;
   p->inCap_ = 0.0101;
   dpSolver.MaintainFrontier(p, rbt);
@@ -99,8 +104,28 @@ bool CheckParetoFrontier(const DpSolver &dpSolver, BufNodeRbTree &rbt) {
   return true;
 }
 
-TEST_F(CpuTest, ParetoFrontierTest_Random) {
+TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
   NetData net = NetData::GenRandomNet(1000);
+  BufInvLib lib;
+
+  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  BufNode *src = solver.BuildBufferTree();
+
+  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+
+  // src->ty_ = BufNodeType::Buffer; // hack for testing
+  // simple test
+  BufNodeRbTree rbt;
+  for (auto *node : src->TopologicalSort()) {
+    node->loading_ = 0.1; // hack for testing
+    dpSolver.MaintainFrontier(node, rbt);
+  }
+
+  EXPECT_TRUE(CheckParetoFrontier(dpSolver, rbt));
+}
+
+TEST_F(CpuTest, ParetoFrontierTest_Loading) {
+  NetData net = NetData::GenRandomNet(30);
   BufInvLib lib;
 
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
@@ -110,13 +135,85 @@ TEST_F(CpuTest, ParetoFrontierTest_Random) {
 
   // simple test
   BufNodeRbTree rbt;
+
+  auto *p1 = nodeMgr_.Alloc();
+  p1->ty_ = BufNodeType::Init;
+  p1->rat_ = 10.0;
+  p1->loading_ = 0.1;
+  dpSolver.MaintainFrontier(p1, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+
+  // p2 is dominated by p1
+  auto *p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 9.0;
+  p->loading_ = 0.2;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+  EXPECT_EQ((*rbt.begin())->uid_, p1->uid_);
+
+  // new element in the frontier
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 9.0;
+  p->loading_ = 0.05;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 2);
+
+  // new element in the frontier
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 12.0;
+  p->loading_ = 0.35;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 3);
+
+  // new element dominate all existing elements
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 15.0;
+  p->loading_ = 0.01;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+
+  // similar element
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 15.001;
+  p->loading_ = 0.0101;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+}
+
+TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
+  NetData net = NetData::GenRandomNet(1000);
+  BufInvLib lib;
+
+  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  BufNode *src = solver.BuildBufferTree();
+
+  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+
+  // src->ty_ = BufNodeType::Buffer; // hack for testing
+  // simple test
+  BufNodeRbTree rbt;
   for (auto *node : src->TopologicalSort()) {
+    node->ty_ = BufNodeType::Init;
+    node->loading_ = node->inCap_; // hack for testing
+    node->inCap_ = 0.0;            // hack for testing
     dpSolver.MaintainFrontier(node, rbt);
   }
 
   EXPECT_TRUE(CheckParetoFrontier(dpSolver, rbt));
 }
-
 // // Parameterized test example
 // class BufNodeTypeParameterizedTest
 //     : public ::testing::TestWithParam<std::pair<BufNodeType, const char *>>

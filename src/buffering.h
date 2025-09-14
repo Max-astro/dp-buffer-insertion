@@ -413,6 +413,11 @@ struct DpSolver {
 
   bool SimilarNodes(const BufNode *a, const BufNode *b) const {
     bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.minDelay_;
+    if (a->ty_ == BufNodeType::Init && b->ty_ == BufNodeType::Init) {
+      // Compare loading instead of inCap during merge child stage
+      bool loadingEq = std::abs(a->loading_ - b->loading_) < libCells_.minCap_;
+      return ratEq && loadingEq;
+    }
     bool inCapEq = std::abs(a->inCap_ - b->inCap_) < libCells_.minCap_;
     return ratEq && inCapEq;
   }
@@ -424,6 +429,11 @@ struct DpSolver {
     }
 
     bool ratGt = a->rat_ > b->rat_;
+    if (a->ty_ == BufNodeType::Init && b->ty_ == BufNodeType::Init) {
+      // Compare loading instead of inCap during merge child stage
+      bool loadingLt = a->loading_ < b->loading_;
+      return ratGt && loadingLt;
+    }
     bool inCapLt = a->inCap_ < b->inCap_;
     return ratGt && inCapLt;
   }
@@ -436,6 +446,7 @@ struct DpSolver {
     return dp_.at(node->uid_)[1];
   }
 
+  // TODO: use taskflow to parallelize the dp tree building
   void BuildDpTree(bool multiThread = false);
   void GenNodeSolutions(const BufNode *node);
   BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv);

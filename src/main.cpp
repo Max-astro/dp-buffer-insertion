@@ -69,19 +69,19 @@ void RunExample() {
 }
 
 int main(int argc, char **argv) {
-  // RunExample();
+  RunExample();
   
-  auto start = std::chrono::high_resolution_clock::now();
+  // auto start = std::chrono::high_resolution_clock::now();
 
-  BufInvLib lib;
-  BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  // BufInvLib lib;
+  // BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
 
-  auto end = std::chrono::high_resolution_clock::now();
-  auto duration =
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  printf("Time taken to load library: %f seconds\n",
-         duration.count() / 1000000.0);
+  // auto end = std::chrono::high_resolution_clock::now();
+  // auto duration =
+  //     std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  // printf("Time taken to load library: %f seconds\n",
+  //        duration.count() / 1000000.0);
 
-  Benchmark(lib);
+  // Benchmark(lib);
   return 0;
 }
