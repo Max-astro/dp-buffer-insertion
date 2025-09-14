@@ -1,4 +1,5 @@
 #include "buffering.h"
+// #include "taskflow.hpp"
 
 BufInvLib::BufInvLib()
     : lib_(read_lib(std::string("../sky130_fd_sc_hd__tt_025C_1v80.lib"))),
@@ -210,30 +211,30 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
       continue;
     }
 
-    { // Debug: check phase
-      for (auto s : GetPosSolutions(child)) {
-        assert(s->CheckPhase(false));
-      }
-      for (auto s : GetNegSolutions(child)) {
-        assert(s->CheckPhase(true));
-      }
-    }
+    // { // Debug: check phase
+    //   for (auto s : GetPosSolutions(child)) {
+    //     assert(s->CheckPhase(false));
+    //   }
+    //   for (auto s : GetNegSolutions(child)) {
+    //     assert(s->CheckPhase(true));
+    //   }
+    // }
 
     MergeChildSolutions(posCandidates, GetPosSolutions(child));
     MergeChildSolutions(negCandidates, GetNegSolutions(child));
   }
 
-  {
-    // Debug: check fanout size
-    for (auto s : posCandidates) {
-      assert(s->children_.size() == node->children_.size());
-      assert(s->loading_ > 0.0);
-    }
-    for (auto s : negCandidates) {
-      assert(s->children_.size() == node->children_.size());
-      assert(s->loading_ > 0.0);
-    }
-  }
+  // {
+  //   // Debug: check fanout size
+  //   for (auto s : posCandidates) {
+  //     assert(s->children_.size() == node->children_.size());
+  //     assert(s->loading_ > 0.0);
+  //   }
+  //   for (auto s : negCandidates) {
+  //     assert(s->children_.size() == node->children_.size());
+  //     assert(s->loading_ > 0.0);
+  //   }
+  // }
 
   auto posDup = nodeMgr_.Dup(posCandidates);
   auto negDup = nodeMgr_.Dup(negCandidates);
@@ -246,22 +247,23 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
   // Or, we can remove buffer from negative candidates
   solutions[1] = GenSolutionsByPhase(negDup, posDup);
 
-  {
-    // Debug: check phase
-    for (auto s : solutions[0]) {
-      if (!s->CheckPhase(false)) {
-        s->EmitDOT("pos_phase_error.dot");
-        assert(0);
-      }
-    }
-    for (auto s : solutions[1]) {
-      if (!s->CheckPhase(true)) {
-        s->EmitDOT("neg_phase_error.dot");
-        assert(0);
-      }
-    }
-  }
+  // {
+  //   // Debug: check phase
+  //   for (auto s : solutions[0]) {
+  //     if (!s->CheckPhase(false)) {
+  //       s->EmitDOT("pos_phase_error.dot");
+  //       assert(0);
+  //     }
+  //   }
+  //   for (auto s : solutions[1]) {
+  //     if (!s->CheckPhase(true)) {
+  //       s->EmitDOT("neg_phase_error.dot");
+  //       assert(0);
+  //     }
+  //   }
+  // }
 
+  // std::lock_guard<std::mutex> lock(*mutex_);
   dp_.emplace(node->uid_, std::move(solutions));
 }
 
@@ -377,28 +379,37 @@ void DpSolver::MergeChildSolutions(BufNodeVec &srcSolutions,
   std::copy(merged.begin(), merged.end(), std::back_inserter(srcSolutions));
 }
 
-void DpSolver::Solve() {
-  // {
-  //   for (auto &buf : libCells_.bufs_) {
-  //     float vr = buf.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
-  //     0.04); float vf = buf.CalcDelay(DelayType::Fall,
-  //     BufInvLib::DEFAULT_TRANS, 0.04); printf("DpSolver::Solve buf dly: %f,
-  //     %f\n", vr, vf);
-  //   }
-  //   for (auto &inv : libCells_.invs_) {
-  //     float vr = inv.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
-  //     0.04); float vf = inv.CalcDelay(DelayType::Fall,
-  //     BufInvLib::DEFAULT_TRANS, 0.04); printf("DpSolver::Solve inv dly: %f,
-  //     %f\n", vr, vf);
-  //   }
-  // }
+void DpSolver::BuildDpTree(bool multiThread) {
+  // if (multiThread) {
+  //   tf::Executor executor;
+  //   tf::Taskflow taskflow;
 
+  //   std::unordered_map<BufNode *, tf::Task> tasks;
+  //   for (auto *node : src_->TopologicalSort()) {
+  //     if (node->ty_ == BufNodeType::Src || node->ty_ == BufNodeType::Sink) {
+  //       continue;
+  //     }
+  //     auto task = taskflow.emplace([this, node]() { GenNodeSolutions(node);
+  //     }); tasks[node] = task; for (auto child : node->children_) {
+  //       if (child->ty_ != BufNodeType::Sink) {
+  //         task.succeed(tasks.at(child));
+  //       }
+  //     }
+  //   }
+
+  //   executor.run(taskflow).wait();
+  // return;
+  // }
   for (auto *node : src_->TopologicalSort()) {
     if (node->ty_ == BufNodeType::Src) {
       continue;
     }
     GenNodeSolutions(node);
   }
+}
+
+void DpSolver::Solve(bool multiThread) {
+  BuildDpTree(multiThread);
 
   // Source node equals to net's driver pin
   // we only need positive solutions
@@ -421,5 +432,17 @@ void DpSolver::Solve() {
 }
 
 BufNode *DpSolver::GetBestSolution() const {
-  return dp_.at(src_->uid_)[0].front();
+  BufNode *best = nullptr;
+  float bestRat = -std::numeric_limits<float>::max();
+  for (auto s : GetPosSolutions(src_)) {
+    float srcRat =
+        s->rat_ - driverArc_.CalcDelay(DelayType::Rise,
+                                       BufInvLib::DEFAULT_TRANS, s->loading_);
+    s->rat_ = srcRat;
+    if (srcRat > bestRat) {
+      best = s;
+      bestRat = srcRat;
+    }
+  }
+  return best;
 }

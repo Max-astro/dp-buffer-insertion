@@ -32,6 +32,7 @@ struct TimingArc {
   }
 };
 
+// Libcells only has one timing arc
 struct BufLibCell {
   static constexpr float DEFAULT_TRANS = 0.01;
 
@@ -219,6 +220,8 @@ struct NodeMgr {
   }
 
   void Realloc(size_t total) {
+    printf("NodeMgr::Realloc: %zu -> %zu\n", total_, total);
+
     total_ = total;
     freeNodes_.reserve(total_);
     for (size_t i = 0; i < total_; i++) {
@@ -260,6 +263,12 @@ struct NodeMgr {
     node->Reset();
     usedNodes_.erase(node);
     freeNodes_.push_back(node);
+  }
+
+  void Reset() {
+    while (!usedNodes_.empty()) {
+      Recycle(*usedNodes_.begin());
+    }
   }
 
   // For debug only
@@ -384,6 +393,7 @@ public:
 
 struct DpSolver {
   NodeMgr &nodeMgr_;
+  const BufLibCell &driverArc_; // Driver's timing arc
   const BufNode *src_;
   const BufInvLib &libCells_;
 
@@ -394,8 +404,10 @@ struct DpSolver {
 
   static constexpr size_t DP_SIZE = 16;
 
-  DpSolver(NodeMgr &nodeMgr, const BufNode *src, const BufInvLib &libCells)
-      : nodeMgr_(nodeMgr), src_(src), libCells_(libCells) {}
+  DpSolver(NodeMgr &nodeMgr, const BufNode *src, const BufInvLib &libCells,
+           const BufLibCell &driverArc)
+      : nodeMgr_(nodeMgr), src_(src), libCells_(libCells),
+        driverArc_(driverArc) {}
 
   BufNodeVec2 InitDp(const BufNode *node);
 
@@ -424,6 +436,7 @@ struct DpSolver {
     return dp_.at(node->uid_)[1];
   }
 
+  void BuildDpTree(bool multiThread = false);
   void GenNodeSolutions(const BufNode *node);
   BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv);
   void GenRemoveBufferSolutions(BufNodeVec &candidates, BufNodeRbTree &rbt);
@@ -433,6 +446,6 @@ struct DpSolver {
   void MergeChildSolutions(BufNodeVec &srcSolutions,
                            const BufNodeVec &childSolutions);
 
-  void Solve();
+  void Solve(bool multiThread = false);
   BufNode *GetBestSolution() const;
 };
