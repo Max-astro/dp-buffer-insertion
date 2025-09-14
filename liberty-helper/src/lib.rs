@@ -23,6 +23,7 @@ mod ffi {
 
         fn read_lib(file: &CxxString) -> Box<LibDb>;
         fn get_cell(lib: &LibDb, cell_name: &CxxString) -> Box<LibCell>;
+        fn get_pin_capacitance(cell: &LibCell, pin: &CxxString) -> f64;
         fn get_timing_table(
             cell: &LibCell,
             ipin: &CxxString,
@@ -53,6 +54,13 @@ fn get_cell(lib: &LibDb, cell_name: &CxxString) -> Box<LibCell> {
     Box::new(LibCell {
         cell: cell.unwrap() as *const _,
     })
+}
+
+fn get_pin_capacitance(cell: &LibCell, pin: &CxxString) -> f64 {
+    let pin = pin.to_str().expect("invalid pin name");
+    let lib_ref = unsafe { &*cell.cell };
+    let pin_ref = lib_ref.pin.get(&PinId::from(pin)).expect("pin not found");
+    pin_ref.capacitance.unwrap()
 }
 
 fn get_timing_table(

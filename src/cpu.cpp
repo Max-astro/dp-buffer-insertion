@@ -1,5 +1,40 @@
 #include "buffering.h"
 
+BufInvLib::BufInvLib()
+    : lib_(read_lib(std::string("../sky130_fd_sc_hd__tt_025C_1v80.lib"))),
+      bufs_(), invs_() {
+
+  for (auto sz : SIZES) {
+    std::string name = BUF_NAME + std::to_string(sz);
+    auto cell = get_cell(*lib_, std::move(name));
+    auto rise = get_timing_table(*cell, std::string(INPUT_PIN),
+                                 std::string(BUF_OUTPUT_PIN), true);
+    auto fall = get_timing_table(*cell, std::string(INPUT_PIN),
+                                 std::string(BUF_OUTPUT_PIN), false);
+
+    float inCap = get_pin_capacitance(*cell, std::string(INPUT_PIN));
+    BufLibCell buf(name, TimingArc(INPUT_PIN, std::move(rise), std::move(fall)),
+                   inCap);
+    // printf("buf: %s, inCap: %f\n", name.c_str(), inCap);
+    bufs_.emplace_back(std::move(buf));
+  }
+
+  for (auto sz : SIZES) {
+    std::string name = INV_NAME + std::to_string(sz);
+    auto cell = get_cell(*lib_, std::move(name));
+    auto rise = get_timing_table(*cell, std::string(INPUT_PIN),
+                                 std::string(INV_OUTPUT_PIN), true);
+    auto fall = get_timing_table(*cell, std::string(INPUT_PIN),
+                                 std::string(INV_OUTPUT_PIN), false);
+
+    float inCap = get_pin_capacitance(*cell, std::string(INPUT_PIN));
+    BufLibCell inv(name, TimingArc(INPUT_PIN, std::move(rise), std::move(fall)),
+                   inCap);
+    // printf("inv: %s, inCap: %f\n", name.c_str(), inCap);
+    invs_.emplace_back(std::move(inv));
+  }
+}
+
 void BufNode::EmitDOT(const char *filename) const {
   std::ofstream os(filename, std::ofstream::out);
 
@@ -50,6 +85,18 @@ bool BufNode::CheckPhase(bool inv) const {
   };
 
   return dfs(this) == inv;
+}
+
+bool BufNode::CheckLoading() const {
+  float loading = 0.0;
+  for (auto child : children_) {
+    loading += child->inCap_;
+  }
+  bool eq = std::abs(loading - loading_) < 1e-7;
+  if (ty_ == BufNodeType::Removed) {
+    eq = eq && std::abs(inCap_ - loading_) < 1e-7;
+  }
+  return eq;
 }
 
 std::vector<BufNode *> BufNode::TopologicalSort() const {
@@ -180,9 +227,11 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
     // Debug: check fanout size
     for (auto s : posCandidates) {
       assert(s->children_.size() == node->children_.size());
+      assert(s->loading_ > 0.0);
     }
     for (auto s : negCandidates) {
       assert(s->children_.size() == node->children_.size());
+      assert(s->loading_ > 0.0);
     }
   }
 
@@ -191,11 +240,11 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
   // To generate positive solutions, we need to insert buffer to positive
   // candidates and insert inverter to negative candidates;
   // Or, we can remove buffer from positive candidates
-  solutions[0] = GenSolutionsByPhase(posCandidates, negCandidates, false);
+  solutions[0] = GenSolutionsByPhase(posCandidates, negCandidates);
   // For negative solutions, we need to insert buffer to negative candidates
   // and insert inverter to positive candidates.
   // Or, we can remove buffer from negative candidates
-  solutions[1] = GenSolutionsByPhase(negDup, posDup, true);
+  solutions[1] = GenSolutionsByPhase(negDup, posDup);
 
   {
     // Debug: check phase
@@ -218,7 +267,7 @@ void DpSolver::GenNodeSolutions(const BufNode *node) {
 
 // Nodes in both pos and neg vectors will be modified
 BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
-                                         BufNodeVec &insertInv, bool inv) {
+                                         BufNodeVec &insertInv) {
   // All new solutions will be stored in the rbt
   // in order to keep the Pareto frontier easier.
   BufNodeRbTree rbt;
@@ -232,7 +281,7 @@ BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
     }
   }
 
-  // GenRemoveBufferSolutions(insertBuf, rbt);
+  GenRemoveBufferSolutions(insertBuf, rbt);
 
   InsertLibCell(insertBuf, rbt, false);
   InsertLibCell(insertInv, rbt, true);
@@ -249,6 +298,7 @@ void DpSolver::GenRemoveBufferSolutions(BufNodeVec &candidates,
   for (auto *s : candidates) {
     auto *dup = nodeMgr_.Dup(s);
     dup->RemoveBuffer();
+    assert(dup->inCap_ > 0);
     MaintainFrontier(dup, rbt);
   }
 }
@@ -268,6 +318,12 @@ void DpSolver::InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt,
 }
 
 void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
+  assert(node);
+  assert(node->rat_ < std::numeric_limits<float>::max());
+  assert(node->ty_ == BufNodeType::Init || node->ty_ == BufNodeType::Src ||
+         node->inCap_ > 0);
+  assert(node->ty_ != BufNodeType::Sink || node->loading_ > 0);
+
   if (solutions.empty()) {
     solutions.insert(node);
     return;
@@ -322,6 +378,21 @@ void DpSolver::MergeChildSolutions(BufNodeVec &srcSolutions,
 }
 
 void DpSolver::Solve() {
+  // {
+  //   for (auto &buf : libCells_.bufs_) {
+  //     float vr = buf.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
+  //     0.04); float vf = buf.CalcDelay(DelayType::Fall,
+  //     BufInvLib::DEFAULT_TRANS, 0.04); printf("DpSolver::Solve buf dly: %f,
+  //     %f\n", vr, vf);
+  //   }
+  //   for (auto &inv : libCells_.invs_) {
+  //     float vr = inv.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
+  //     0.04); float vf = inv.CalcDelay(DelayType::Fall,
+  //     BufInvLib::DEFAULT_TRANS, 0.04); printf("DpSolver::Solve inv dly: %f,
+  //     %f\n", vr, vf);
+  //   }
+  // }
+
   for (auto *node : src_->TopologicalSort()) {
     if (node->ty_ == BufNodeType::Src) {
       continue;

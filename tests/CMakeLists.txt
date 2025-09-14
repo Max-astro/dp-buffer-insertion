@@ -10,6 +10,7 @@ add_executable(
 target_link_libraries(
     cpu_test
     GTest::gtest_main
+    liberty_helper
     buffering_lib
 )
 

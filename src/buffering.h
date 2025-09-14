@@ -1,60 +1,95 @@
 #include <cassert>
 #include <cstddef>
+#include <cstdio>
 #include <fstream>
-#include <iostream>
 #include <random>
 #include <set>
 #include <unordered_set>
 #include <vector>
 
-struct BufLibCell {
-  std::string name_;
-  float k_;
-  float b_;
-  float inCap_;
+#include "liberty_helper.rs.h"
 
-  BufLibCell(std::string name, float k, float b, float inCap)
-      : name_(std::move(name)), k_(k), b_(b), inCap_(inCap) {}
+using LibPtr = rust::Box<LibDb>;
+using TimingTbl2DPtr = rust::Box<TimingTbl2D>;
 
-  static constexpr float DEFAULT_TRANS = 0.01;
+enum class DelayType { Rise, Fall };
 
-  float CalcDelay(float loading) const {
-    // TODO: read cell's delay LUT to calculate NLDM delay
-    return k_ * loading + b_;
+// Consider single output cell only
+struct TimingArc {
+  std::string ipin_;
+  std::array<TimingTbl2DPtr, 2> tbl_; // 0: rise, 1: fall
+
+  TimingArc(std::string ipin, TimingTbl2DPtr riseTbl, TimingTbl2DPtr fallTbl)
+      : ipin_(std::move(ipin)), tbl_({std::move(riseTbl), std::move(fallTbl)}) {
+  }
+
+  double CalcDelay(DelayType ty, double trans, double loading) const {
+    if (ty == DelayType::Rise) {
+      return lookup(*tbl_[0], trans, loading);
+    } else {
+      return lookup(*tbl_[1], trans, loading);
+    }
   }
 };
 
-constexpr size_t Sizes[] = {1, 2, 4, 6, 8, 12, 16};
-constexpr float BufK[] = {6.012892, 2.484284, 1.429871, 1.022770,
-                          0.833302, 0.621765, 0.577835};
-constexpr float BufB[] = {0.055511, 0.086697, 0.094935, 0.078714,
-                          0.080080, 0.083737, 0.087594};
-constexpr float BufInCap[] = {0.002103, 0.001727, 0.002400, 0.004620,
-                              0.007007, 0.009187, 0.013639};
-constexpr float InvK[] = {4.474317, 2.352907, 1.345238, 0.956021,
-                          0.730050, 0.534276, 0.440415};
-constexpr float InvB[] = {0.016583, 0.015086, 0.016207, 0.016781,
-                          0.017008, 0.018485, 0.020665};
-constexpr float InvCap[] = {0.002302, 0.004459, 0.009004, 0.013272,
-                            0.017653, 0.026011, 0.033442};
+struct BufLibCell {
+  static constexpr float DEFAULT_TRANS = 0.01;
 
+  std::string name_;
+  TimingArc arcs_;
+  float inCap_;
+
+  BufLibCell(std::string name, TimingArc arc, float inCap)
+      : name_(std::move(name)), arcs_(std::move(arc)), inCap_(inCap) {}
+
+  double CalcDelay(DelayType ty, double trans, double loading) const {
+    return arcs_.CalcDelay(ty, trans, loading);
+  }
+
+  // const TimingArc &GetArc(const char *ipin) const {
+  //   for (auto &arc : arcs_) {
+  //     if (arc.ipin_ == ipin) {
+  //       return arc;
+  //     }
+  //   }
+  //   assert(false && "Timing arc not found");
+  // }
+};
+
+// TODO: support other liberty files
 struct BufInvLib {
+  LibPtr lib_; // For managing liberty's memory allocated from Rust
   std::vector<BufLibCell> bufs_;
   std::vector<BufLibCell> invs_;
 
-  const float minDelay_; // For measuring minimum delay interval
-  const float minCap_;
+  // sky130 lib
+  constexpr static const std::string BUF_NAME = "sky130_fd_sc_hd__buf_";
+  constexpr static const std::string INV_NAME = "sky130_fd_sc_hd__inv_";
+  constexpr static const std::string INPUT_PIN = "A";
+  constexpr static const std::string BUF_OUTPUT_PIN = "X";
+  constexpr static const std::string INV_OUTPUT_PIN = "Y";
 
-  BufInvLib() : minDelay_(InvB[0]), minCap_(0.001) {
-    char name[32];
-    for (int i = 0; i < 7; i++) {
-      snprintf(name, sizeof(name), "buf_X%zu", Sizes[i]);
-      bufs_.push_back(BufLibCell(name, BufK[i], BufB[i], BufInCap[i]));
+  constexpr static const int SIZES[] = {1, 2, 4, 6, 8, 12, 16};
 
-      snprintf(name, sizeof(name), "inv_X%zu", Sizes[i]);
-      invs_.push_back(BufLibCell(name, InvK[i], InvB[i], InvCap[i]));
-    }
-  }
+  // For measuring minimum delay interval
+  static constexpr float minDelay_ = 0.005;
+  static constexpr float minCap_ = 0.001;
+
+  static constexpr float DEFAULT_TRANS = 0.01;
+
+  BufInvLib();
+  // BufInvLib() : minDelay_(InvB[0]), minCap_(0.001) {
+  //   const float SCALE = 1.5;
+  //   char name[32];
+  //   for (int i = 0; i < 7; i++) {
+  //     snprintf(name, sizeof(name), "buf_X%zu", Sizes[i]);
+  //     bufs_.push_back(BufLibCell(name, BufK[i] * SCALE, BufB[i],
+  //     BufInCap[i]));
+
+  //     snprintf(name, sizeof(name), "inv_X%zu", Sizes[i]);
+  //     invs_.push_back(BufLibCell(name, InvK[i] * SCALE, InvB[i], InvCap[i]));
+  //   }
+  // }
 };
 
 enum class BufNodeType {
@@ -116,14 +151,19 @@ struct BufNode {
   void SetLibCell(const BufLibCell *libCell, bool isInv) {
     driver_ = libCell;
     ty_ = isInv ? BufNodeType::Inverter : BufNodeType::Buffer;
-    rat_ -= libCell->CalcDelay(loading_);
+    float dly =
+        libCell->CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS, loading_);
+    assert(dly > 0);
+    rat_ -= dly;
+
     inCap_ = libCell->inCap_;
   }
 
   void RemoveBuffer() {
     ty_ = BufNodeType::Removed;
     // If buf/inv is removed, it means current node's fanouts will be driven
-    // directly by its parent, so its input capacitance is equal to its loading
+    // directly by its parent, so its input capacitance is equal to its
+    // loading
     inCap_ = loading_;
   }
 
@@ -241,6 +281,7 @@ struct SinkNode {
 };
 
 struct NetData {
+  // TODO: Need record source pin's timing arc
   float srcRAT_ = std::numeric_limits<float>::max();
   float inCap_ = 0.0;
   std::vector<SinkNode> sinks_;
@@ -322,7 +363,8 @@ public:
 
   float GetBufDelayByLoading(float loading) const {
     // TODO: use typical buffer's input capacitance
-    return defaultBuf_.CalcDelay(loading);
+    return defaultBuf_.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
+                                 loading);
   }
 
   // TODO: use more practical values
@@ -383,8 +425,7 @@ struct DpSolver {
   }
 
   void GenNodeSolutions(const BufNode *node);
-  BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv,
-                                 bool inv);
+  BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv);
   void GenRemoveBufferSolutions(BufNodeVec &candidates, BufNodeRbTree &rbt);
   void InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt, bool inv);
   void MaintainFrontier(BufNode *node, BufNodeRbTree &rbt);
