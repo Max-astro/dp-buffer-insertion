@@ -4,7 +4,6 @@ project(buffering LANGUAGES CXX)
 # # Set cmake policy to use the new behavior for project version variables
 # cmake_policy(SET CMP0048 NEW)
 
-
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +21,8 @@ FetchContent_MakeAvailable(googletest)
 
 # Path to the Rust crate
 set(RUST_CRATE_DIR "${CMAKE_SOURCE_DIR}/liberty-helper")  # adjust as needed
+
+set(TASKFLOW_DIR "${CMAKE_SOURCE_DIR}/taskflow")
 
 # Build type → Cargo profile/args
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -62,10 +63,9 @@ set_target_properties(liberty_helper PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${RUST_INCLUDE_DIR}"
 )
 
-# Main executable
 add_library(buffering_lib src/cpu.cpp)
 add_dependencies(buffering_lib liberty_helper_rust)
-target_include_directories(buffering_lib PUBLIC src PRIVATE ${RUST_INCLUDE_DIR})
+target_include_directories(buffering_lib PUBLIC src PRIVATE ${RUST_INCLUDE_DIR} ${TASKFLOW_DIR})
 target_link_libraries(buffering_lib PRIVATE liberty_helper)
 
 # Set debug flags for Debug build type
@@ -77,6 +77,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Main executable
 add_executable(cpu src/main.cpp "${RUST_CXX_SHIM}")
 add_dependencies(cpu liberty_helper_rust)
 target_include_directories(cpu PRIVATE "${RUST_INCLUDE_DIR}")

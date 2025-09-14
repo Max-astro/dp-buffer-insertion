@@ -32,7 +32,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Simple) {
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
 
   // simple test
   BufNodeRbTree rbt;
@@ -106,7 +106,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Random) {
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
 
   // simple test
   BufNodeRbTree rbt;
