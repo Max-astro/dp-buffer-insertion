@@ -64,11 +64,16 @@ struct BufInvLib {
   std::vector<BufLibCell> invs_;
 
   // sky130 lib
-  constexpr static const std::string BUF_NAME = "sky130_fd_sc_hd__buf_";
-  constexpr static const std::string INV_NAME = "sky130_fd_sc_hd__inv_";
-  constexpr static const std::string INPUT_PIN = "A";
-  constexpr static const std::string BUF_OUTPUT_PIN = "X";
-  constexpr static const std::string INV_OUTPUT_PIN = "Y";
+  // constexpr static const std::string BUF_NAME = "sky130_fd_sc_hd__buf_";
+  // constexpr static const std::string INV_NAME = "sky130_fd_sc_hd__inv_";
+  // constexpr static const std::string INPUT_PIN = "A";
+  // constexpr static const std::string BUF_OUTPUT_PIN = "X";
+  // constexpr static const std::string INV_OUTPUT_PIN = "Y";
+  static constexpr const char *BUF_NAME = "sky130_fd_sc_hd__buf_";
+  static constexpr const char *INV_NAME = "sky130_fd_sc_hd__inv_";
+  static constexpr const char *INPUT_PIN = "A";
+  static constexpr const char *BUF_OUTPUT_PIN = "X";
+  static constexpr const char *INV_OUTPUT_PIN = "Y";
 
   constexpr static const int SIZES[] = {1, 2, 4, 6, 8, 12, 16};
 
