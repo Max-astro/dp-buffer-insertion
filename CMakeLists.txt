@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.31.1)
+cmake_minimum_required(VERSION 3.13.1)
 project(buffering LANGUAGES CXX)
 
 # # Set cmake policy to use the new behavior for project version variables

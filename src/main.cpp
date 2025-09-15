@@ -1,4 +1,5 @@
 #include "buffering.h"
+#include <chrono>
 
 void Benchmark(const BufInvLib &lib) {
   const BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer

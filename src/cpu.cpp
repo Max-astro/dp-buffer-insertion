@@ -1,4 +1,5 @@
 #include "buffering.h"
+#include <functional>
 // #include "taskflow.hpp"
 
 BufInvLib::BufInvLib()
