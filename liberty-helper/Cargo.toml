@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 liberty-db = "0.16"
-plotly = "0.13.5"
+plotly = { version = "0.13.5", features = ["static_export_default"] }
 cxx = "1"
 
 [lib]

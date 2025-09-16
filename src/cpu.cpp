@@ -56,9 +56,15 @@ void BufNode::EmitDOT(std::ofstream &os) const {
   std::string driverName = driver_ ? "\n" + driver_->name_ : "";
 
   os << uid_ << " [label=\"" << uid_ << "\n"
-     << GetBufNodeTypeStr(ty_) << driverName << "\nRAT: " << rat_
-     << "\nInCap: " << inCap_ << "\nLoading: " << loading
-     << "\", shape=ellipse, color=" << GetBufNodeTypeColor(ty_) << "]\n";
+     << GetBufNodeTypeStr(ty_) << driverName << "\nRAT: " << rat_;
+
+  if (ty_ != BufNodeType::Src) {
+    os << "\nInCap: " << inCap_;
+  }
+  if (ty_ != BufNodeType::Sink) {
+    os << "\nLoading: " << loading;
+  }
+  os << "\", shape=ellipse, color=" << GetBufNodeTypeColor(ty_) << "]\n";
   for (auto child : children_) {
     os << uid_ << " -> " << child->uid_ << " [style=solid]\n";
   }

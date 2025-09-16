@@ -84,13 +84,13 @@ endif()
 add_executable(benchmark src/benchmark.cpp "${RUST_CXX_SHIM}")
 add_dependencies(benchmark liberty_helper_rust)
 target_include_directories(benchmark PRIVATE "${RUST_INCLUDE_DIR}")
-target_link_libraries(benchmark PRIVATE liberty_helper buffering_lib)
+target_link_libraries(benchmark PRIVATE buffering_lib)
 
 # Example executable
 add_executable(example src/example.cpp "${RUST_CXX_SHIM}")
 add_dependencies(example liberty_helper_rust)
 target_include_directories(example PRIVATE "${RUST_INCLUDE_DIR}")
-target_link_libraries(example PRIVATE liberty_helper buffering_lib)
+target_link_libraries(example PRIVATE buffering_lib)
 
 # # Add debug-specific settings for the executable
 # if(CMAKE_BUILD_TYPE STREQUAL "Debug")

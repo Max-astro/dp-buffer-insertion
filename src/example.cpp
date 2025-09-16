@@ -27,7 +27,7 @@ void RunExample() {
 
   {
     NetData net =
-        NetData::GenRandomNet(60, 1.0f, 2.0f, 0.001, 0.01); // unbalanced
+        NetData::GenRandomNet(500, 1.0f, 5.0f, 0.001, 0.01); // unbalanced
     NodeMgr nodeMgr(net.sinks_.size() * 100);
     ClusterSolver solver(nodeMgr, net, defaultBuf);
     BufNode *src = solver.BuildBufferTree();
@@ -49,7 +49,7 @@ void RunExample() {
 
   {
     NetData net =
-        NetData::GenRandomNet(100, 1.0f, 1.2f, 0.001, 0.01); // balanced
+        NetData::GenRandomNet(500, 1.0f, 1.2f, 0.001, 0.01); // balanced
     NodeMgr nodeMgr(net.sinks_.size() * 100);
     ClusterSolver solver(nodeMgr, net, defaultBuf);
     BufNode *src = solver.BuildBufferTree();

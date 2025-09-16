@@ -123,7 +123,7 @@ inline const char *GetBufNodeTypeStr(BufNodeType ty) {
   case BufNodeType::Sink:
     return "Sink";
   case BufNodeType::Src:
-    return "Src";
+    return "Source";
   }
 }
 
@@ -191,17 +191,17 @@ using BufNodeVec = std::vector<BufNode *>;
 inline const char *GetBufNodeTypeColor(BufNodeType ty) {
   switch (ty) {
   case BufNodeType::Init:
-    return "red";
+    return "darkorchid1";
   case BufNodeType::Buffer:
-    return "blue";
+    return "deepskyblue";
   case BufNodeType::Inverter:
-    return "green";
+    return "lime";
   case BufNodeType::Removed:
-    return "gray";
+    return "gold";
   case BufNodeType::Sink:
-    return "sienna";
+    return "gray";
   case BufNodeType::Src:
-    return "orange";
+    return "red";
   }
 }
 
