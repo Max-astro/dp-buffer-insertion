@@ -1,0 +1,3 @@
+[submodule "OpenTimer"]
+	path = OpenTimer
+	url = https://github.com/OpenTimer/OpenTimer.git
