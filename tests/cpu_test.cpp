@@ -1,4 +1,5 @@
 #include "buffering.h" // Include your header files here
+#include <cmath>
 #include <gtest/gtest.h>
 
 // Test fixture class (optional, useful for more complex tests)
@@ -214,6 +215,62 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
 
   EXPECT_TRUE(CheckParetoFrontier(dpSolver, rbt));
 }
+
+TEST_F(CpuTest, CalcDelay_MonotonicWithLoading_Buffer) {
+  const BufLibCell &cell = lib_.bufs_[2];
+  const double tr = BufInvLib::DEFAULT_TRANS;
+
+  const double l1 = 0.002;
+  const double l2 = 0.01;
+  const double l3 = 0.05;
+
+  const double r1 = cell.CalcDelay(DelayType::Rise, tr, l1);
+  const double r2 = cell.CalcDelay(DelayType::Rise, tr, l2);
+  const double r3 = cell.CalcDelay(DelayType::Rise, tr, l3);
+
+  const double f1 = cell.CalcDelay(DelayType::Fall, tr, l1);
+  const double f2 = cell.CalcDelay(DelayType::Fall, tr, l2);
+  const double f3 = cell.CalcDelay(DelayType::Fall, tr, l3);
+
+  EXPECT_LE(r1, r2);
+  EXPECT_LE(r2, r3);
+  EXPECT_LE(f1, f2);
+  EXPECT_LE(f2, f3);
+
+  // expected values
+  float vr1 = 0.076293, vr2 = 0.095338, vr3 = 0.173246, vf1 = 0.107588,
+        vf2 = 0.123129, vf3 = 0.170985;
+
+  EXPECT_NEAR(r1, vr1, 1e-6);
+  EXPECT_NEAR(r2, vr2, 1e-6);
+  EXPECT_NEAR(r3, vr3, 1e-6);
+  EXPECT_NEAR(f1, vf1, 1e-6);
+  EXPECT_NEAR(f2, vf2, 1e-6);
+  EXPECT_NEAR(f3, vf3, 1e-6);
+}
+
+TEST_F(CpuTest, CalcDelay_sky130) {
+  const BufLibCell &cell = lib_.bufs_[2];
+  const double load = 0.02;
+
+  const double t1 = 0.005;
+  const double t2 = 0.02;
+  const double t3 = 0.08;
+
+  const double r1 = cell.CalcDelay(DelayType::Rise, t1, load);
+  const double r2 = cell.CalcDelay(DelayType::Rise, t2, load);
+  const double r3 = cell.CalcDelay(DelayType::Rise, t3, load);
+
+  const double f1 = cell.CalcDelay(DelayType::Fall, t1, load);
+  const double f2 = cell.CalcDelay(DelayType::Fall, t2, load);
+  const double f3 = cell.CalcDelay(DelayType::Fall, t3, load);
+
+  EXPECT_LE(r1, r2);
+  EXPECT_LE(r2, r3);
+  EXPECT_LE(f1, f2);
+  EXPECT_LE(f2, f3);
+}
+
 // // Parameterized test example
 // class BufNodeTypeParameterizedTest
 //     : public ::testing::TestWithParam<std::pair<BufNodeType, const char *>>
