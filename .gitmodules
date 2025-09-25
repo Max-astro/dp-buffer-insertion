@@ -1,3 +1,3 @@
 [submodule "OpenTimer"]
 	path = OpenTimer
-	url = https://github.com/OpenTimer/OpenTimer.git
+	url = git@github.com:Max-astro/OpenTimer.git
