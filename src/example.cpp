@@ -116,7 +116,7 @@ void RunExample(const char *vpath) {
   // // dump the timing graph to dot format for debugging
   // timer.dump_graph(std::cout);
 
-  // BufInvLib lib;
+  // Sky130BufInvLib lib;
   // BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
   // {
   //   NetData net =

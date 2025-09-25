@@ -1,6 +1,6 @@
 #include "buffering.h"
 
-void Benchmark(const BufInvLib &lib) {
+void Benchmark(const Sky130BufInvLib &lib) {
   const BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
   for (size_t fanouts : {100, 500, 1000, 2000, 3000, 3500, 4000, 5000, 6000,
                          7000, 8000}) {
@@ -29,7 +29,7 @@ void Benchmark(const BufInvLib &lib) {
 int main(int argc, char **argv) {
   auto start = std::chrono::high_resolution_clock::now();
 
-  BufInvLib lib;
+  Sky130BufInvLib lib;
   BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
 
   auto end = std::chrono::high_resolution_clock::now();

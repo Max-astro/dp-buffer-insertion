@@ -1,7 +1,7 @@
 #include "buffering.h"
 #include <chrono>
 
-void Benchmark(const BufInvLib &lib) {
+void Benchmark(const Sky130BufInvLib &lib) {
   const BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
   // for (size_t fanouts : {100, 500, 1000, 2000, 3000}) {
   for (size_t fanouts : {100, 500, 1000, 2000}) {
@@ -27,7 +27,7 @@ void Benchmark(const BufInvLib &lib) {
 }
 
 void RunExample() {
-  BufInvLib lib;
+  Sky130BufInvLib lib;
   BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
   {
     NetData net =
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
 
   auto start = std::chrono::high_resolution_clock::now();
 
-  BufInvLib lib;
+  Sky130BufInvLib lib;
   BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
 
   auto end = std::chrono::high_resolution_clock::now();

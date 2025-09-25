@@ -59,6 +59,9 @@ add_custom_target(liberty_helper_rust ALL
   DEPENDS "${RUST_STATIC}" "${RUST_CXX_HEADER}" "${RUST_CXX_UMBRELLA}" "${RUST_CXX_SHIM}"
 )
 
+# Bring in OpenTimer submodule (library target: OpenTimer)
+add_subdirectory(OpenTimer)
+
 # Import the Rust static library
 add_library(liberty_helper STATIC IMPORTED GLOBAL)
 set_target_properties(liberty_helper PROPERTIES
@@ -68,8 +71,8 @@ set_target_properties(liberty_helper PROPERTIES
 
 add_library(buffering_lib src/cpu.cpp)
 add_dependencies(buffering_lib liberty_helper_rust)
-target_include_directories(buffering_lib PUBLIC src PRIVATE ${RUST_INCLUDE_DIR} ${TASKFLOW_DIR})
-target_link_libraries(buffering_lib PRIVATE liberty_helper)
+target_include_directories(buffering_lib PUBLIC src PRIVATE ${RUST_INCLUDE_DIR} ${TASKFLOW_DIR} "${CMAKE_SOURCE_DIR}/OpenTimer")
+target_link_libraries(buffering_lib PRIVATE liberty_helper OpenTimer)
 
 # Set debug flags for Debug build type
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG -DENABLE_ASSERT=${ENABLE_ASSERT}")
@@ -80,14 +83,12 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# Bring in OpenTimer submodule (library target: OpenTimer)
-add_subdirectory(OpenTimer)
 
 # Benchmark executable
 add_executable(benchmark src/benchmark.cpp "${RUST_CXX_SHIM}")
 add_dependencies(benchmark liberty_helper_rust)
-target_include_directories(benchmark PRIVATE "${RUST_INCLUDE_DIR}")
-target_link_libraries(benchmark PRIVATE buffering_lib)
+target_include_directories(benchmark PRIVATE "${RUST_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/OpenTimer")
+target_link_libraries(benchmark PRIVATE buffering_lib OpenTimer)
 
 # Example executable
 add_executable(example src/example.cpp "${RUST_CXX_SHIM}")

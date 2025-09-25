@@ -1,8 +1,73 @@
 #include "buffering.h"
 #include <functional>
+
 // #include "taskflow.hpp"
 
-BufInvLib::BufInvLib()
+const ot::Timing &OTTimingArc::InitArc(const std::string &fr,
+                                       const std::string &to,
+                                       const ot::Cell *cell) {
+  auto cellpin = cell->cellpin(to);
+  assert(cellpin->direction == ot::CellpinDirection::OUTPUT);
+  for (auto &timing : cellpin->timings) {
+    if (timing.related_pin == fr) {
+      return timing;
+    }
+  }
+  assert(false && "Timing not found");
+  return cellpin->timings[0];
+}
+
+OTTimingArc::OTTimingArc(const std::string &fr, const std::string &to,
+                         const ot::Cell *cell)
+    : arc_(InitArc(fr, to, cell)), cell_(cell) {
+  auto ipin = cell->cellpin(fr);
+  assert(ipin->direction == ot::CellpinDirection::INPUT);
+  inCap_ = ipin->capacitance.value();
+}
+
+float OTTimingArc::CalcDelay(ot::Tran irf, ot::Tran orf, float trans,
+                             float loading) const {
+  auto dly = arc_.delay(irf, orf, trans, loading);
+
+  assert(dly.has_value());
+  return dly.value();
+}
+
+float OTTimingArc::CalcBufDelay(ot::Tran irf, float trans,
+                                float loading) const {
+  return CalcDelay(irf, irf, trans, loading);
+}
+
+float OTTimingArc::CalcInvDelay(ot::Tran irf, float trans,
+                                float loading) const {
+  ot::Tran orf = irf == ot::RISE ? ot::FALL : ot::RISE;
+  return CalcDelay(irf, orf, trans, loading);
+}
+
+const ot::Cell *TechLib::GetCell(const std::string &cellName) {
+  auto &celllib = timer_.celllib()[ot::MAX];
+  auto &cell = celllib->cells.at(cellName);
+
+  return &cell;
+}
+
+void TechLib::InitLib() {
+  for (auto sz : GetBufSizes()) {
+    std::string cname = GetBufName() + std::to_string(sz);
+    auto cell = GetCell(cname);
+    auto opin = cell->cellpin(GetBufOutputPin());
+    bufs_.emplace_back(OTTimingArc(GetInputPin(), GetBufOutputPin(), cell));
+  }
+
+  for (auto sz : GetInvSizes()) {
+    std::string cname = GetInvName() + std::to_string(sz);
+    auto cell = GetCell(cname);
+    auto opin = cell->cellpin(GetInvOutputPin());
+    invs_.emplace_back(OTTimingArc(GetInputPin(), GetInvOutputPin(), cell));
+  }
+}
+
+Sky130BufInvLib::Sky130BufInvLib()
     : lib_(read_lib(std::string("../sky130_fd_sc_hd__tt_025C_1v80.lib"))),
       bufs_(), invs_() {
 
@@ -452,9 +517,9 @@ BufNode *DpSolver::GetBestSolution() const {
   BufNode *best = nullptr;
   float bestRat = -std::numeric_limits<float>::max();
   for (auto s : GetPosSolutions(src_)) {
-    float srcRat =
-        s->rat_ - driverArc_.CalcDelay(DelayType::Rise,
-                                       BufInvLib::DEFAULT_TRANS, s->loading_);
+    float srcRat = s->rat_ - driverArc_.CalcDelay(
+                                 DelayType::Rise,
+                                 Sky130BufInvLib::DEFAULT_TRANS, s->loading_);
     s->rat_ = srcRat;
     if (srcRat > bestRat) {
       best = s;
@@ -472,12 +537,12 @@ void DpSolver::ReportImprovement(const NetData &net, const BufNode *result,
     oldRat = std::min(oldRat, sink.rat_);
     oldLoading += sink.inputCap_;
   }
-  float oldDelay = driverArc.CalcDelay(DelayType::Rise,
-                                       BufInvLib::DEFAULT_TRANS, oldLoading);
+  float oldDelay = driverArc.CalcDelay(
+      DelayType::Rise, Sky130BufInvLib::DEFAULT_TRANS, oldLoading);
   oldRat -= oldDelay;
 
   float newDelay = driverArc.CalcDelay(
-      DelayType::Rise, BufInvLib::DEFAULT_TRANS, result->loading_);
+      DelayType::Rise, Sky130BufInvLib::DEFAULT_TRANS, result->loading_);
 
   printf("Orignal Net's driver pin: RAT = %f, loading = %f, delay = %f;\n"
          "After buffer insertion  : RAT = %f, loading = %f, delay = %f\n\n",

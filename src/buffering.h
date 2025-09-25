@@ -12,6 +12,8 @@
 
 #include "liberty_helper.rs.h"
 
+#include <ot/timer/timer.hpp>
+
 using LibPtr = rust::Box<LibDb>;
 using TimingTbl2DPtr = rust::Box<TimingTbl2D>;
 
@@ -46,7 +48,7 @@ struct BufLibCell {
   BufLibCell(std::string name, TimingArc arc, float inCap)
       : name_(std::move(name)), arcs_(std::move(arc)), inCap_(inCap) {}
 
-  double CalcDelay(DelayType ty, double trans, double loading) const {
+  float CalcDelay(DelayType ty, double trans, double loading) const {
     return arcs_.CalcDelay(ty, trans, loading);
   }
 
@@ -60,8 +62,98 @@ struct BufLibCell {
   // }
 };
 
+struct OTTimingArc {
+  const ot::Cell *cell_;
+  const ot::Timing &arc_;
+  float inCap_;
+
+  float CalcDelay(ot::Tran irf, ot::Tran orf, float trans, float loading) const;
+  float CalcBufDelay(ot::Tran irf, float trans, float loading) const;
+  float CalcInvDelay(ot::Tran irf, float trans, float loading) const;
+
+  OTTimingArc(const std::string &fr, const std::string &to,
+              const ot::Cell *cell);
+  const ot::Timing &InitArc(const std::string &fr, const std::string &to,
+                            const ot::Cell *cell);
+};
+
+struct TechLib {
+  virtual const char *GetBufName() const = 0;
+  virtual const char *GetInvName() const = 0;
+  virtual const char *GetInputPin() const = 0;
+  virtual const char *GetBufOutputPin() const = 0;
+  virtual const char *GetInvOutputPin() const = 0;
+
+  virtual const std::vector<int> &GetBufSizes() const = 0;
+  virtual const std::vector<int> &GetInvSizes() const = 0;
+
+  virtual const float GetMinDelay() const = 0;
+  virtual const float GetMinCap() const = 0;
+
+  virtual const float GetDefaultTrans() const = 0;
+
+  TechLib(const ot::Timer &timer) : timer_(timer) {}
+
+  void InitLib();
+
+  const ot::Cell *GetCell(const std::string &cellName);
+
+  const ot::Timer &timer_;
+
+  std::vector<OTTimingArc> bufs_;
+  std::vector<OTTimingArc> invs_;
+};
+
+struct Nangate45Lib : public TechLib {
+  const char *GetBufName() const override { return "BUF_X"; }
+  const char *GetInvName() const override { return "INV_X"; }
+  const char *GetInputPin() const override { return "A"; }
+  const char *GetBufOutputPin() const override { return "Z"; }
+  const char *GetInvOutputPin() const override { return "ZN"; }
+
+  const std::vector<int> bufInvSize_ = {1, 2, 4, 8, 16, 32};
+  const std::vector<int> &GetBufSizes() const override { return bufInvSize_; }
+  const std::vector<int> &GetInvSizes() const override { return bufInvSize_; }
+
+  // For measuring minimum delay interval
+  const float GetMinDelay() const override {
+    return 0.002; // ns (1e-9 s) }
+  }
+  const float GetMinCap() const override {
+    return 0.5; // fF (1e-15 F) }
+  }
+  const float GetDefaultTrans() const override { return 0.01; }
+
+  Nangate45Lib(const ot::Timer &timer) : TechLib(timer) { InitLib(); }
+
+  // static const ot::Cellpin *GetCellpin(const ot::Timer &timer,
+  //                                      const std::string &cellName);
+};
+
+struct Sky130Lib : public TechLib {
+  const char *GetBufName() const override { return "sky130_fd_sc_hd__buf_"; }
+  const char *GetInvName() const override { return "sky130_fd_sc_hd__inv_"; }
+  const char *GetInputPin() const override { return "A"; }
+  const char *GetBufOutputPin() const override { return "X"; }
+  const char *GetInvOutputPin() const override { return "Y"; }
+
+  const std::vector<int> bufInvSize_ = {1, 2, 4, 6, 8, 12, 16};
+  const std::vector<int> &GetBufSizes() const override { return bufInvSize_; }
+  const std::vector<int> &GetInvSizes() const override { return bufInvSize_; }
+
+  // For measuring minimum delay interval
+  const float GetMinDelay() const override { return 0.005; }
+  const float GetMinCap() const override { return 0.001; }
+  const float GetDefaultTrans() const override { return 0.01; }
+
+  Sky130Lib(const ot::Timer &timer) : TechLib(timer) { InitLib(); }
+
+  // static const ot::Cellpin *GetCellpin(const ot::Timer &timer,
+  //                                      const std::string &cellName);
+};
+
 // TODO: support other liberty files
-struct BufInvLib {
+struct Sky130BufInvLib {
   LibPtr lib_; // For managing liberty's memory allocated from Rust
   std::vector<BufLibCell> bufs_;
   std::vector<BufLibCell> invs_;
@@ -86,8 +178,8 @@ struct BufInvLib {
 
   static constexpr float DEFAULT_TRANS = 0.01;
 
-  BufInvLib();
-  // BufInvLib() : minDelay_(InvB[0]), minCap_(0.001) {
+  Sky130BufInvLib();
+  // Sky130BufInvLib() : minDelay_(InvB[0]), minCap_(0.001) {
   //   const float SCALE = 1.5;
   //   char name[32];
   //   for (int i = 0; i < 7; i++) {
@@ -96,7 +188,8 @@ struct BufInvLib {
   //     BufInCap[i]));
 
   //     snprintf(name, sizeof(name), "inv_X%zu", Sizes[i]);
-  //     invs_.push_back(BufLibCell(name, InvK[i] * SCALE, InvB[i], InvCap[i]));
+  //     invs_.push_back(BufLibCell(name, InvK[i] * SCALE, InvB[i],
+  //     InvCap[i]));
   //   }
   // }
 };
@@ -160,8 +253,8 @@ struct BufNode {
   void SetLibCell(const BufLibCell *libCell, bool isInv) {
     driver_ = libCell;
     ty_ = isInv ? BufNodeType::Inverter : BufNodeType::Buffer;
-    float dly =
-        libCell->CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS, loading_);
+    float dly = libCell->CalcDelay(DelayType::Rise,
+                                   Sky130BufInvLib::DEFAULT_TRANS, loading_);
     assert(dly > 0);
     rat_ -= dly;
 
@@ -380,8 +473,8 @@ public:
 
   float GetBufDelayByLoading(float loading) const {
     // TODO: use typical buffer's input capacitance
-    return defaultBuf_.CalcDelay(DelayType::Rise, BufInvLib::DEFAULT_TRANS,
-                                 loading);
+    return defaultBuf_.CalcDelay(DelayType::Rise,
+                                 Sky130BufInvLib::DEFAULT_TRANS, loading);
   }
 
   // TODO: use more practical values
@@ -403,7 +496,7 @@ struct DpSolver {
   NodeMgr &nodeMgr_;
   const BufLibCell &driverArc_; // Driver's timing arc
   const BufNode *src_;
-  const BufInvLib &libCells_;
+  const Sky130BufInvLib &libCells_;
 
   using BufNodeVec2 = std::array<BufNodeVec, 2>;
 
@@ -412,8 +505,8 @@ struct DpSolver {
 
   static constexpr size_t DP_SIZE = 16;
 
-  DpSolver(NodeMgr &nodeMgr, const BufNode *src, const BufInvLib &libCells,
-           const BufLibCell &driverArc)
+  DpSolver(NodeMgr &nodeMgr, const BufNode *src,
+           const Sky130BufInvLib &libCells, const BufLibCell &driverArc)
       : nodeMgr_(nodeMgr), src_(src), libCells_(libCells),
         driverArc_(driverArc) {}
 

@@ -6,7 +6,7 @@
 class CpuTest : public ::testing::Test {
 protected:
   NodeMgr nodeMgr_;
-  BufInvLib lib_;
+  Sky130BufInvLib lib_;
   CpuTest() : nodeMgr_(1000), lib_() {}
 
   void SetUp() override {
@@ -27,7 +27,7 @@ TEST(BufferingTest, DummyTestExampleP) {}
 
 TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   NetData net = NetData::GenRandomNet(30);
-  BufInvLib lib;
+  Sky130BufInvLib lib;
 
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
@@ -107,7 +107,7 @@ bool CheckParetoFrontier(const DpSolver &dpSolver, BufNodeRbTree &rbt) {
 
 TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
   NetData net = NetData::GenRandomNet(1000);
-  BufInvLib lib;
+  Sky130BufInvLib lib;
 
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
@@ -127,7 +127,7 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
 
 TEST_F(CpuTest, ParetoFrontierTest_Loading) {
   NetData net = NetData::GenRandomNet(30);
-  BufInvLib lib;
+  Sky130BufInvLib lib;
 
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
@@ -196,7 +196,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
 
 TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
   NetData net = NetData::GenRandomNet(1000);
-  BufInvLib lib;
+  Sky130BufInvLib lib;
 
   ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
@@ -216,9 +216,9 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
   EXPECT_TRUE(CheckParetoFrontier(dpSolver, rbt));
 }
 
-TEST_F(CpuTest, CalcDelay_MonotonicWithLoading_Buffer) {
+TEST_F(CpuTest, CalcDelay_sky130) {
   const BufLibCell &cell = lib_.bufs_[2];
-  const double tr = BufInvLib::DEFAULT_TRANS;
+  const double tr = Sky130BufInvLib::DEFAULT_TRANS;
 
   const double l1 = 0.002;
   const double l2 = 0.01;
@@ -249,26 +249,121 @@ TEST_F(CpuTest, CalcDelay_MonotonicWithLoading_Buffer) {
   EXPECT_NEAR(f3, vf3, 1e-6);
 }
 
-TEST_F(CpuTest, CalcDelay_sky130) {
-  const BufLibCell &cell = lib_.bufs_[2];
-  const double load = 0.02;
+TEST_F(CpuTest, CalcDelay_ot) {
+  using namespace ot;
+  ot::Timer timer;
 
-  const double t1 = 0.005;
-  const double t2 = 0.02;
-  const double t3 = 0.08;
+  // the first step is to read a library.
+  timer.read_celllib("../sky130_fd_sc_hd__tt_025C_1v80.lib")
+      .read_verilog("../tests/sky130.v");
+  // .read_verilog("../dataset/test_cases/case3.v");
+  // .read_sdc("../dataset/st.sdc");
 
-  const double r1 = cell.CalcDelay(DelayType::Rise, t1, load);
-  const double r2 = cell.CalcDelay(DelayType::Rise, t2, load);
-  const double r3 = cell.CalcDelay(DelayType::Rise, t3, load);
+  timer.create_clock("vclk", 1.0);
+  timer.update_timing();
 
-  const double f1 = cell.CalcDelay(DelayType::Fall, t1, load);
-  const double f2 = cell.CalcDelay(DelayType::Fall, t2, load);
-  const double f3 = cell.CalcDelay(DelayType::Fall, t3, load);
+  auto clk = timer.clocks().at("vclk");
+  float period = clk.period();
 
-  EXPECT_LE(r1, r2);
-  EXPECT_LE(r2, r3);
-  EXPECT_LE(f1, f2);
-  EXPECT_LE(f2, f3);
+  for (auto &pi : timer.primary_inputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_at(pi.first, el, rf, 0.0);
+      timer.set_slew(pi.first, el, rf, 5.0);
+    }
+  }
+
+  for (auto &po : timer.primary_outputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_rat(po.first, el, rf, el == MIN ? -1.0 : period);
+    }
+  }
+
+  timer.update_timing();
+  timer.dump_timer(std::cout);
+  EXPECT_TRUE(timer.report_timing(1, MAX).size() == 1);
+
+  Sky130Lib lib(timer);
+  const double tr = Sky130BufInvLib::DEFAULT_TRANS;
+  EXPECT_NEAR(tr, lib.GetDefaultTrans(), 1e-6);
+
+  const float loads[] = {0.002, 0.01, 0.05};
+  for (int i = 0; i < lib.bufs_.size(); i++) {
+    auto &refLibCell = lib_.bufs_[i];
+    auto &lc = lib.bufs_[i];
+
+    EXPECT_TRUE(lc.arc_.cell_rise.has_value());
+    EXPECT_TRUE(lc.arc_.cell_fall.has_value());
+    EXPECT_TRUE(lc.arc_.rise_transition.has_value());
+    EXPECT_TRUE(lc.arc_.fall_transition.has_value());
+
+    EXPECT_EQ(lc.cell_->name, refLibCell.name_);
+    EXPECT_NEAR(lc.inCap_, refLibCell.inCap_, 1e-6);
+
+    for (float cap : loads) {
+      const double r1 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+      const double r2 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+      const double r3 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+
+      const float r1_lc = lc.CalcBufDelay(ot::RISE, tr, cap);
+      const float r2_lc = lc.CalcBufDelay(ot::RISE, tr, cap);
+      const float r3_lc = lc.CalcBufDelay(ot::RISE, tr, cap);
+
+      EXPECT_NEAR(r1, r1_lc, 1e-6);
+      EXPECT_NEAR(r2, r2_lc, 1e-6);
+      EXPECT_NEAR(r3, r3_lc, 1e-6);
+
+      const float f1 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+      const float f2 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+      const float f3 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+
+      const float f1_lc = lc.CalcBufDelay(ot::FALL, tr, cap);
+      const float f2_lc = lc.CalcBufDelay(ot::FALL, tr, cap);
+      const float f3_lc = lc.CalcBufDelay(ot::FALL, tr, cap);
+
+      EXPECT_NEAR(f1, f1_lc, 1e-6);
+      EXPECT_NEAR(f2, f2_lc, 1e-6);
+      EXPECT_NEAR(f3, f3_lc, 1e-6);
+    }
+  }
+
+  for (int i = 0; i < lib.invs_.size(); i++) {
+    auto &refLibCell = lib_.invs_[i];
+    auto &lc = lib.invs_[i];
+
+    EXPECT_TRUE(lc.arc_.cell_rise.has_value());
+    EXPECT_TRUE(lc.arc_.cell_fall.has_value());
+    EXPECT_TRUE(lc.arc_.rise_transition.has_value());
+    EXPECT_TRUE(lc.arc_.fall_transition.has_value());
+
+    EXPECT_EQ(lc.cell_->name, refLibCell.name_);
+    EXPECT_NEAR(lc.inCap_, refLibCell.inCap_, 1e-6);
+
+    for (float cap : loads) {
+      const double r1 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+      const double r2 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+      const double r3 = refLibCell.CalcDelay(DelayType::Rise, tr, cap);
+
+      const float r1_lc = lc.CalcInvDelay(ot::FALL, tr, cap);
+      const float r2_lc = lc.CalcInvDelay(ot::FALL, tr, cap);
+      const float r3_lc = lc.CalcInvDelay(ot::FALL, tr, cap);
+
+      EXPECT_NEAR(r1, r1_lc, 1e-6);
+      EXPECT_NEAR(r2, r2_lc, 1e-6);
+      EXPECT_NEAR(r3, r3_lc, 1e-6);
+
+      const float f1 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+      const float f2 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+      const float f3 = refLibCell.CalcDelay(DelayType::Fall, tr, cap);
+
+      const float f1_lc = lc.CalcInvDelay(ot::RISE, tr, cap);
+      const float f2_lc = lc.CalcInvDelay(ot::RISE, tr, cap);
+      const float f3_lc = lc.CalcInvDelay(ot::RISE, tr, cap);
+
+      EXPECT_NEAR(f1, f1_lc, 1e-6);
+      EXPECT_NEAR(f2, f2_lc, 1e-6);
+      EXPECT_NEAR(f3, f3_lc, 1e-6);
+    }
+  }
 }
 
 // // Parameterized test example
