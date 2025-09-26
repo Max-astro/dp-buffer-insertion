@@ -3,18 +3,18 @@
 
 // #include "taskflow.hpp"
 
-const ot::Timing &OTTimingArc::InitArc(const std::string &fr,
+const ot::Timing *OTTimingArc::InitArc(const std::string &fr,
                                        const std::string &to,
                                        const ot::Cell *cell) {
   auto cellpin = cell->cellpin(to);
   assert(cellpin->direction == ot::CellpinDirection::OUTPUT);
   for (auto &timing : cellpin->timings) {
     if (timing.related_pin == fr) {
-      return timing;
+      return &timing;
     }
   }
   assert(false && "Timing not found");
-  return cellpin->timings[0];
+  return &cellpin->timings[0];
 }
 
 OTTimingArc::OTTimingArc(const std::string &fr, const std::string &to,
@@ -25,17 +25,24 @@ OTTimingArc::OTTimingArc(const std::string &fr, const std::string &to,
   inCap_ = ipin->capacitance.value();
 }
 
+OTTimingArc OTTimingArc::ExtractFromPins(const ot::Pin *fr, const ot::Pin *to) {
+  auto &frName = fr->cellpin(ot::MAX)->name;
+  auto &toName = to->cellpin(ot::MAX)->name;
+  auto cell = fr->gate()->cell(ot::MAX);
+  return OTTimingArc(frName, toName, cell);
+}
+
 float OTTimingArc::CalcDelay(ot::Tran irf, ot::Tran orf, float trans,
                              float loading) const {
-  auto dly = arc_.delay(irf, orf, trans, loading);
+  auto dly = arc_->delay(irf, orf, trans, loading);
 
   assert(dly.has_value());
   return dly.value();
 }
 
 float OTTimingArc::CalcAverageDelay(float trans, float loading) const {
-  float rise = arc_.cell_rise.value()(trans, loading);
-  float fall = arc_.cell_fall.value()(trans, loading);
+  float rise = arc_->cell_rise.value()(trans, loading);
+  float fall = arc_->cell_fall.value()(trans, loading);
   return (rise + fall) / 2.0;
 }
 
@@ -240,9 +247,9 @@ BufNode *ClusterSolver::BuildBufferTree() {
 
   // use a heap to store the sinks
   RatHeap maxHeap(NodeRatLT);
+  uint32_t sinkIdx = 0;
   for (auto &sink : net_.sinks_) {
-    BufNode *node = nodeMgr_.Alloc();
-    node->ty_ = BufNodeType::Sink;
+    BufNode *node = nodeMgr_.AllocSink(sinkIdx++);
     node->rat_ = sink.rat_;
     node->inCap_ = sink.inputCap_;
     maxHeap.push(node);
@@ -451,9 +458,11 @@ void DpSolver::MaintainFrontier(BufNode *node, BufNodeRbTree &solutions) {
   auto it = solutions.lower_bound(node);
   if (it == solutions.begin()) {
     // node has the largest RAT
-    if (!SimilarNodes(*it, node)) {
-      solutions.insert(node);
-    }
+    // if (!SimilarNodes(*it, node)) {
+    //   bool res;
+    //   std::tie(it, res) = solutions.insert(node);
+    //   assert(res);
+    // }
   } else {
     // check if the node is dominated by the previous (larger RAT) node
     it = std::prev(it);
@@ -525,9 +534,7 @@ void DpSolver::BuildDpTree(bool multiThread) {
   }
 }
 
-void DpSolver::Solve(bool multiThread) {
-  BuildDpTree(multiThread);
-
+void DpSolver::BuildSrcSolutions() {
   // Source node equals to net's driver pin
   // we only need positive solutions
   auto solutions = InitDp(src_);
@@ -539,6 +546,7 @@ void DpSolver::Solve(bool multiThread) {
     }
   }
   solutions[0].push_back(root);
+
   for (auto *child : src_->children_) {
     if (child->ty_ == BufNodeType::Sink) {
       continue;
@@ -548,12 +556,17 @@ void DpSolver::Solve(bool multiThread) {
   dp_.emplace(src_->uid_, std::move(solutions));
 }
 
+void DpSolver::Solve(bool multiThread) {
+  BuildDpTree(multiThread);
+  BuildSrcSolutions();
+}
+
 BufNode *DpSolver::GetBestSolution() const {
   BufNode *best = nullptr;
+  float trans = driverTrans_.value_or(libCells_.GetDefaultTrans());
   float bestRat = -std::numeric_limits<float>::max();
   for (auto s : GetPosSolutions(src_)) {
-    float srcRat = s->rat_ - driverArc_.CalcAverageDelay(
-                                 libCells_.GetDefaultTrans(), s->loading_);
+    float srcRat = s->rat_ - driverArc_.CalcAverageDelay(trans, s->loading_);
     s->rat_ = srcRat;
     if (srcRat > bestRat) {
       best = s;
@@ -570,8 +583,8 @@ void DpSolver::ReportImprovement(const NetData &net, const BufNode *result) {
     oldRat = std::min(oldRat, sink.rat_);
     oldLoading += sink.inputCap_;
   }
-  float oldDelay =
-      driverArc_.CalcAverageDelay(libCells_.GetDefaultTrans(), oldLoading);
+  float oldDelay = driverArc_.CalcAverageDelay(
+      driverTrans_.value_or(libCells_.GetDefaultTrans()), oldLoading);
   oldRat -= oldDelay;
 
   float newDelay = driverArc_.CalcAverageDelay(libCells_.GetDefaultTrans(),
@@ -581,4 +594,143 @@ void DpSolver::ReportImprovement(const NetData &net, const BufNode *result) {
          "After buffer insertion  : RAT = %f, loading = %f, delay = %f\n\n",
          oldRat, oldLoading, oldDelay, result->rat_, result->loading_,
          newDelay);
+}
+
+SinkNode SinkNode::FromOTPin(const ot::Pin *pin) {
+  auto rrat = pin->rat(ot::MAX, ot::RISE);
+  auto frat = pin->rat(ot::MAX, ot::FALL);
+  float rat = 0.0;
+  if (rrat.has_value() && frat.has_value()) {
+    rat = (rrat.value() + frat.value()) / 2.0;
+  } else if (rrat.has_value()) {
+    rat = rrat.value();
+  } else if (frat.has_value()) {
+    rat = frat.value();
+  } else {
+    assert(false && "Rat not found");
+  }
+
+  float inCap =
+      (pin->cap(ot::MAX, ot::RISE) + pin->cap(ot::MAX, ot::FALL)) / 2.0;
+  return SinkNode(inCap, rat);
+}
+
+NetData NetData::FromTimer(const ot::Point *cellIn, const ot::Point *cellOut) {
+  auto *frPin = &cellIn->pin;
+  auto *toPin = &cellOut->pin;
+  auto *net = toPin->net();
+
+  NetData netData;
+  netData.driverArc_ = OTTimingArc::ExtractFromPins(frPin, toPin);
+  netData.driverPin_ = toPin;
+  netData.driverTrans_ = frPin->slew(ot::MAX, cellIn->transition).value();
+
+  std::cout << "driver: " << toPin->name() << " sinks = " << net->num_pins() - 1
+            << " driverTrans = " << netData.driverTrans_ << '\n';
+
+  netData.sinks_.reserve(net->num_pins() - 1);
+  uint32_t sinkIdx = 0;
+  for (auto *pin : net->pins()) {
+    if (pin == toPin) {
+      continue;
+    }
+
+    netData.sinks_.emplace_back(SinkNode::FromOTPin(pin));
+    netData.srcRAT_ = std::min(netData.srcRAT_, netData.sinks_.back().rat_);
+    netData.inCap_ += netData.sinks_.back().inputCap_;
+
+    netData.sinkMap_.emplace(sinkIdx++, pin);
+  }
+
+  return netData;
+}
+
+void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
+                               const std::string &driverName,
+                               BufNode *solution) {
+  std::unordered_map<const BufNode *, std::string> nodePinMap;
+  auto topoOrd = solution->TopologicalSort();
+
+  int removedCount = 0;
+  for (auto *node : topoOrd) {
+    if (node->ty_ == BufNodeType::Removed) {
+      ++removedCount;
+    }
+  }
+  auto tmp = solution->TopologicalSort();
+  printf("Total node: %zu, removedCount = %d, remainCount = %zu\n",
+         topoOrd.size(), removedCount, tmp.size());
+
+  // preprocess: remove the removed nodes
+  for (auto *node : topoOrd) {
+    std::vector<BufNode *> newChildren;
+    for (auto *child : node->children_) {
+      if (child->ty_ == BufNodeType::Removed) {
+        for (auto *grandChild : child->children_) {
+          newChildren.push_back(grandChild);
+        }
+      } else {
+        newChildren.push_back(child);
+      }
+    }
+    node->children_ = std::move(newChildren);
+  }
+
+  uint32_t gateIdx = 0;
+  for (auto *node : topoOrd) {
+    ++gateIdx;
+
+    if (node->ty_ == BufNodeType::Sink) {
+      // disconnect the sink's input pin from the net
+      auto *sink = sinkMap_.at(node->sinkIdx_);
+      timer.disconnect_pin(sink->name());
+      nodePinMap.emplace(node, sink->name());
+      continue;
+    }
+
+    if (node->ty_ == BufNodeType::Src) {
+      for (auto *child : node->children_) {
+        timer.connect_pin(nodePinMap.at(child), driverPin_->net()->name());
+      }
+      continue;
+    }
+
+    if (node->ty_ == BufNodeType::Removed) {
+      continue;
+    }
+
+    assert(node->driver_ && "node should be a buffer or inverter");
+
+    // Five steps to insert a buffer:
+    // 1. insert a buffer/inverter gate
+    // 2. insert a net
+    // 3. add new inserted gate's input pin to nodePinMap,
+    //    waiting to be connected to its driver's output pin
+    // 4. connect new inserted gate's output pin to the net
+    // 5. connect children's input pin to the net
+
+    auto &libCellName = node->driver_->cell_->name;
+    std::string gateName = driverName + "_" + std::to_string(gateIdx);
+    std::string netName = driverName + "_net_" + std::to_string(gateIdx);
+
+    auto oPinName = node->ty_ == BufNodeType::Buffer
+                        ? techLib.GetBufOutputPin()
+                        : techLib.GetInvOutputPin();
+    std::string cellOutputPinName = gateName + ":" + oPinName;
+    std::string cellInputPinName = gateName + ":" + techLib.GetInputPin();
+
+    // step 1 and 2
+    timer.insert_gate(gateName, libCellName).insert_net(netName);
+
+    // step 3
+    nodePinMap.emplace(node, std::move(cellInputPinName));
+
+    // step 4
+    timer.connect_pin(cellOutputPinName, netName);
+
+    // step 5
+    for (auto *child : node->children_) {
+      timer.connect_pin(nodePinMap.at(child), netName);
+    }
+  }
 }

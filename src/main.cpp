@@ -1,93 +1,155 @@
 #include "buffering.h"
-#include <chrono>
 
-void Benchmark(const Sky130BufInvLib &lib) {
-  const BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-  // for (size_t fanouts : {100, 500, 1000, 2000, 3000}) {
-  for (size_t fanouts : {100, 500, 1000, 2000}) {
-    NetData net =
-        NetData::GenRandomNet(fanouts, 1.0f, 1.2f, 0.001, 0.01); // balanced
-    NodeMgr nodeMgr(net.sinks_.size() * 1000);
-    ClusterSolver solver(nodeMgr, net, defaultBuf);
-    BufNode *src = solver.BuildBufferTree();
-    // src->EmitDOT("balanced.dot");
+void Init(ot::Timer &timer, const char *vpath) {
+  using namespace ot;
+  // the first step is to read a library.
+  timer.read_celllib("../NangateOpenCellLibrary_typical.lib")
+      .read_verilog(vpath);
 
-    auto start = std::chrono::high_resolution_clock::now();
-    DpSolver dpSolver(nodeMgr, src, lib, defaultBuf);
-    dpSolver.Solve();
-    auto *bestSolution = dpSolver.GetBestSolution();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    printf("Fanout: %zu, Time taken to DP algorithm: %f seconds\n", fanouts,
-           duration.count() / 1000000.0);
+  timer.create_clock("vclk", 1.0);
+  timer.update_timing();
 
-    // bestSolution->EmitDOT("balanced_dp.dot");
+  auto clk = timer.clocks().at("vclk");
+  float period = clk.period();
+
+  for (auto &pi : timer.primary_inputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_at(pi.first, el, rf, 0.0);
+      timer.set_slew(pi.first, el, rf, 0.0);
+    }
   }
+
+  for (auto &po : timer.primary_outputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_rat(po.first, el, rf, el == MIN ? -1.0 : 0.0);
+    }
+  }
+
+  timer.update_timing();
+
+  timer.dump_timer(std::cout);
 }
 
-void RunExample() {
-  Sky130BufInvLib lib;
-  BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-  {
-    NetData net =
-        NetData::GenRandomNet(100, 1.0f, 2.0f, 0.001, 0.01); // unbalanced
-    NodeMgr nodeMgr(net.sinks_.size() * 100);
-    ClusterSolver solver(nodeMgr, net, defaultBuf);
-    BufNode *src = solver.BuildBufferTree();
-    src->EmitDOT("unbalanced.dot");
+bool NeedBuffering(const ot::Point &fr, const ot::Point &to) {
+  const int HIGH_FANOUT_THRESHOLD = 10;
+  const float DELAY_THRESHOLD = 0.1;
 
-    auto start = std::chrono::high_resolution_clock::now();
-    DpSolver dpSolver(nodeMgr, src, lib, defaultBuf);
-    dpSolver.Solve();
-    auto *bestSolution = dpSolver.GetBestSolution();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    printf("Time taken to DP algorithm: %f seconds\n",
-           duration.count() / 1000000.0);
-
-    DpSolver::ReportImprovement(net, bestSolution, defaultBuf);
-    bestSolution->EmitDOT("unbalanced_dp.dot");
+  auto net = to.pin.net();
+  if (!net) {
+    return false;
   }
 
-  {
-    NetData net =
-        NetData::GenRandomNet(100, 1.0f, 1.2f, 0.001, 0.01); // balanced
-    NodeMgr nodeMgr(net.sinks_.size() * 100);
-    ClusterSolver solver(nodeMgr, net, defaultBuf);
-    BufNode *src = solver.BuildBufferTree();
-    src->EmitDOT("balanced.dot");
-
-    auto start = std::chrono::high_resolution_clock::now();
-    DpSolver dpSolver(nodeMgr, src, lib, defaultBuf);
-    dpSolver.Solve();
-    auto *bestSolution = dpSolver.GetBestSolution();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    printf("Time taken to DP algorithm: %f seconds\n",
-           duration.count() / 1000000.0);
-
-    DpSolver::ReportImprovement(net, bestSolution, defaultBuf);
-    bestSolution->EmitDOT("balanced_dp.dot");
+  if (net->num_pins() <= HIGH_FANOUT_THRESHOLD) {
+    return false;
   }
+
+  float dly = to.at - fr.at;
+  // std::cout << point.pin.name() << " dly: " << dly << '\n';
+  if (dly > DELAY_THRESHOLD) {
+    return true;
+  }
+
+  return false;
 }
 
 int main(int argc, char **argv) {
-  // RunExample();
+  if (argc != 2) {
+    std::cerr << "Usage: " << argv[0] << " <verilog file>" << std::endl;
+    return 1;
+  }
 
-  auto start = std::chrono::high_resolution_clock::now();
+  char *vpath = argv[1];
+  ot::Timer timer;
+  Init(timer, vpath);
 
-  Sky130BufInvLib lib;
-  BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  // ------------------------------
+  std::cout << "Init WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+  std::cout << "Area: " << *timer.report_area() << '\n';
 
-  auto end = std::chrono::high_resolution_clock::now();
-  auto duration =
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  printf("Time taken to load library: %f seconds\n",
-         duration.count() / 1000000.0);
+  auto paths = timer.report_timing(1, ot::MAX);
+  for (size_t i = 0; i < paths.size(); ++i) {
+    std::cout << "----- Critical Path " << i << " -----\n";
+    std::cout << paths[i] << '\n';
+  }
 
-  Benchmark(lib);
+  std::vector<std::pair<const ot::Point *, const ot::Point *>> bufferingArcs;
+  std::optional<float> prev_at;
+  auto frIt = paths[0].begin();
+  if (frIt->pin.primary_output()) {
+    ++frIt;
+  }
+  auto toIt = std::next(frIt);
+  while (toIt != paths[0].end()) {
+    if (NeedBuffering(*frIt, *toIt)) {
+      bufferingArcs.emplace_back(&*frIt, &*toIt);
+    }
+    ++frIt;
+    ++toIt;
+  }
+
+  std::cout << "--------------------------------\n";
+  std::cout << "Buffering Drivers: " << bufferingArcs.size() << '\n';
+  for (const auto &p : bufferingArcs) {
+    std::cout << p.first->pin.name() << " -> " << p.second->pin.name() << '\n';
+  }
+  std::cout << "--------------------------------\n\n";
+
+  Nangate45Lib lib(timer);
+
+  for (auto &&[fr, to] : bufferingArcs) {
+    NetData netData = NetData::FromTimer(fr, to);
+    std::cout << "Net Data: " << fr->pin.name() << " -> " << to->pin.name()
+              << ", toRAT = " << *to->pin.rat(ot::MAX, ot::RISE) << " "
+              << *to->pin.rat(ot::MAX, ot::FALL) << '\n';
+
+    // for (auto &sink : netData.sinks_) {
+    //   std::cout << "Sink: " << sink.inputCap_ << " " << sink.rat_ << '\n';
+    // }
+    std::cout << "----------------OPT----------------\n";
+
+    {
+      OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+      NodeMgr nodeMgr(netData.sinks_.size() * 100);
+      ClusterSolver solver(nodeMgr, netData, defaultBuf);
+      BufNode *src = solver.BuildBufferTree();
+      src->EmitDOT("nand45_src.dot");
+
+      DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
+      dpSolver.SetDriverTrans(netData.driverTrans_);
+      dpSolver.Solve();
+      std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
+                << '\n';
+
+      int i = 0;
+      for (auto s : dpSolver.GetPosSolutions(src)) {
+        std::cout << s->rat_ << " " << s->inCap_ << " " << s->loading_ << '\n';
+        std::string fname = "nand45_result_" + std::to_string(i++) + ".dot";
+        s->EmitDOT(fname.c_str());
+      }
+      std::cout << "--------------------------------\n";
+      auto *bestSolution = dpSolver.GetBestSolution();
+      bestSolution->EmitDOT("nand45_best.dot");
+
+      netData.CommitBufferTree(timer, lib, fr->pin.gate()->name(),
+                               bestSolution);
+    }
+
+    // -------------- Optimized timing report ----------------
+    timer.update_timing();
+    timer.dump_timer(std::cout);
+    std::cout << "\n\n-------------- Optimized timing report --------------\n";
+
+    std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+    std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+
+    auto paths = timer.report_timing(1, ot::MAX);
+    for (size_t i = 0; i < paths.size(); ++i) {
+      std::cout << "----- Critical Path -----\n";
+      std::cout << paths[i] << '\n';
+    }
+
+    break;
+  }
+
   return 0;
 }

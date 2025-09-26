@@ -96,6 +96,11 @@ add_dependencies(example liberty_helper_rust)
 target_include_directories(example PRIVATE "${RUST_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/OpenTimer")
 target_link_libraries(example PRIVATE buffering_lib OpenTimer)
 
+add_executable(opt src/main.cpp "${RUST_CXX_SHIM}")
+add_dependencies(opt liberty_helper_rust)
+target_include_directories(opt PRIVATE "${RUST_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/OpenTimer")
+target_link_libraries(opt PRIVATE buffering_lib OpenTimer)
+
 # # Add debug-specific settings for the executable
 # if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 # target_compile_definitions(cpu PRIVATE DEBUG_BUILD)

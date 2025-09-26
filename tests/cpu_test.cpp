@@ -47,8 +47,19 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
 
   EXPECT_EQ(rbt.size(), 1);
 
-  // p2 is dominated by p1
+  // p1 is dominated by p
   auto *p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
+  p->rat_ = 10.0;
+  p->inCap_ = 0.09;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+
+  p1 = p;
+  // p is dominated by p1
+  p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 9.0;
   p->inCap_ = 0.2;
@@ -147,8 +158,19 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
 
   EXPECT_EQ(rbt.size(), 1);
 
-  // p2 is dominated by p1
+  // p1 is dominated by p
   auto *p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Init;
+  p->rat_ = 10.0;
+  p->loading_ = 0.09;
+  dpSolver.MaintainFrontier(p, rbt);
+
+  EXPECT_EQ(rbt.size(), 1);
+  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+
+  p1 = p;
+  // p is dominated by p1
+  p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Init;
   p->rat_ = 9.0;
   p->loading_ = 0.2;
@@ -265,10 +287,10 @@ TEST_F(CpuTest, CalcDelay_ot) {
     auto &refLibCell = oldLib.bufs_[i];
     auto &lc = lib.bufs_[i];
 
-    EXPECT_TRUE(lc.arc_.cell_rise.has_value());
-    EXPECT_TRUE(lc.arc_.cell_fall.has_value());
-    EXPECT_TRUE(lc.arc_.rise_transition.has_value());
-    EXPECT_TRUE(lc.arc_.fall_transition.has_value());
+    EXPECT_TRUE(lc.arc_->cell_rise.has_value());
+    EXPECT_TRUE(lc.arc_->cell_fall.has_value());
+    EXPECT_TRUE(lc.arc_->rise_transition.has_value());
+    EXPECT_TRUE(lc.arc_->fall_transition.has_value());
 
     EXPECT_EQ(lc.cell_->name, refLibCell.name_);
     EXPECT_NEAR(lc.inCap_, refLibCell.inCap_, 1e-6);
@@ -304,10 +326,10 @@ TEST_F(CpuTest, CalcDelay_ot) {
     auto &refLibCell = oldLib.invs_[i];
     auto &lc = lib.invs_[i];
 
-    EXPECT_TRUE(lc.arc_.cell_rise.has_value());
-    EXPECT_TRUE(lc.arc_.cell_fall.has_value());
-    EXPECT_TRUE(lc.arc_.rise_transition.has_value());
-    EXPECT_TRUE(lc.arc_.fall_transition.has_value());
+    EXPECT_TRUE(lc.arc_->cell_rise.has_value());
+    EXPECT_TRUE(lc.arc_->cell_fall.has_value());
+    EXPECT_TRUE(lc.arc_->rise_transition.has_value());
+    EXPECT_TRUE(lc.arc_->fall_transition.has_value());
 
     EXPECT_EQ(lc.cell_->name, refLibCell.name_);
     EXPECT_NEAR(lc.inCap_, refLibCell.inCap_, 1e-6);

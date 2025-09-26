@@ -2,8 +2,11 @@
 
 void Benchmark(const Sky130Lib &lib) {
   const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-  for (size_t fanouts :
-       {100, 500, 1000, 2000, 3000, 3500, 4000, 5000, 6000, 7000, 8000}) {
+  // size_t FANOUTS[] = {100,  500,  1000, 2000, 3000, 3500,
+  //                     4000, 5000, 6000, 7000, 8000};
+
+  size_t FANOUTS[] = {100, 120, 150, 200};
+  for (size_t fanouts : FANOUTS) {
 
     NetData net =
         NetData::GenRandomNet(fanouts, 1.0f, 1.2f, 0.001, 0.01); // balanced
@@ -22,7 +25,8 @@ void Benchmark(const Sky130Lib &lib) {
     printf("Fanout: %zu, Time taken to DP algorithm: %f seconds\n", fanouts,
            duration.count() / 1000000.0);
 
-    // bestSolution->EmitDOT("balanced_dp.dot");
+    std::string fname = "dp_" + std::to_string(fanouts) + ".dot";
+    bestSolution->EmitDOT(fname.c_str());
   }
 }
 

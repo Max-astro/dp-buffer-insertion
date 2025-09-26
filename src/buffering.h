@@ -1,6 +1,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <queue>
@@ -12,7 +13,14 @@
 
 #include "liberty_helper.rs.h"
 
+// #include <ot/timer/timer.hpp>
+
+#pragma push_macro("DEBUG")
+#ifdef DEBUG
+#undef DEBUG
+#endif
 #include <ot/timer/timer.hpp>
+#pragma pop_macro("DEBUG")
 
 using LibPtr = rust::Box<LibDb>;
 using TimingTbl2DPtr = rust::Box<TimingTbl2D>;
@@ -64,7 +72,7 @@ struct BufLibCell {
 
 struct OTTimingArc {
   const ot::Cell *cell_;
-  const ot::Timing &arc_;
+  const ot::Timing *arc_;
   float inCap_;
 
   float CalcDelay(ot::Tran irf, ot::Tran orf, float trans, float loading) const;
@@ -72,10 +80,14 @@ struct OTTimingArc {
   float CalcBufDelay(ot::Tran irf, float trans, float loading) const;
   float CalcInvDelay(ot::Tran irf, float trans, float loading) const;
 
+  OTTimingArc() : cell_(nullptr), arc_(nullptr), inCap_(0.0) {}
+
   OTTimingArc(const std::string &fr, const std::string &to,
               const ot::Cell *cell);
-  const ot::Timing &InitArc(const std::string &fr, const std::string &to,
+  const ot::Timing *InitArc(const std::string &fr, const std::string &to,
                             const ot::Cell *cell);
+
+  static OTTimingArc ExtractFromPins(const ot::Pin *fr, const ot::Pin *to);
 };
 
 struct TechLib {
@@ -118,10 +130,10 @@ struct Nangate45Lib : public TechLib {
 
   // For measuring minimum delay interval
   const float GetMinDelay() const override {
-    return 0.002; // ns (1e-9 s) }
+    return 0.005; // ns (1e-9 s) }
   }
   const float GetMinCap() const override {
-    return 0.5; // fF (1e-15 F) }
+    return 0.1; // fF (1e-15 F) }
   }
   const float GetDefaultTrans() const override { return 0.01; }
 
@@ -205,6 +217,7 @@ struct BufNode {
   // bool isSink_ = false;
   BufNodeType ty_;
   const uint32_t uid_;
+  const uint32_t sinkIdx_ = std::numeric_limits<uint32_t>::max();
   float inCap_ = 0.0;
   float loading_ = 0.0;
   float rat_ = std::numeric_limits<float>::max();
@@ -319,7 +332,18 @@ struct NodeMgr {
     return node;
   }
 
+  BufNode *AllocSink(uint32_t sinkIdx) {
+    BufNode *node = Alloc();
+    node->ty_ = BufNodeType::Sink;
+    uint32_t *p = const_cast<uint32_t *>(&node->sinkIdx_);
+    *p = sinkIdx;
+    return node;
+  }
+
   BufNode *Dup(const BufNode *node) {
+    assert(node->sinkIdx_ == std::numeric_limits<uint32_t>::max() &&
+           "Sink node should not be copied");
+
     BufNode *dup = Alloc();
     dup->ty_ = node->ty_;
     dup->inCap_ = node->inCap_;
@@ -367,13 +391,26 @@ struct SinkNode {
   float rat_;
 
   SinkNode(float inputCap, float rat) : inputCap_(inputCap), rat_(rat) {}
+
+  static SinkNode FromOTPin(const ot::Pin *pin);
 };
 
 struct NetData {
   // TODO: Need record source pin's timing arc
+  OTTimingArc driverArc_;
+  const ot::Pin *driverPin_ = nullptr;
+  float driverTrans_ = 0.0;
   float srcRAT_ = std::numeric_limits<float>::max();
   float inCap_ = 0.0;
   std::vector<SinkNode> sinks_;
+  std::unordered_map<uint32_t, const ot::Pin *> sinkMap_;
+
+  NetData() : driverArc_() {}
+
+  void CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
+                        const std::string &driverName, BufNode *solution);
+
+  static NetData FromTimer(const ot::Point *cellIn, const ot::Point *cellOut);
 
   static NetData GenRandomNet(size_t numSinks, float ratMin = 1.0f,
                               float ratMax = 100.0f, float loadMin = 0.0001f,
@@ -446,18 +483,23 @@ public:
       : nodeMgr_(nodeMgr), net_(net), defaultBuf_(defaultBuf) {}
 
   // TODO: use typical buffer's input capacitance
-  float GetVirtualBufCap() const { return 0.02; }
+  float GetVirtualBufCap() const { return defaultBuf_.inCap_; }
+  float GetDefaultTrans() const { return 0.05; }
 
-  float GetVirtualBufDelay() const { return 0.05; }
+  float GetVirtualBufDelay() const {
+    // Use FO4 delay
+    return defaultBuf_.CalcAverageDelay(GetDefaultTrans(),
+                                        4 * GetVirtualBufCap());
+  }
 
   float GetBufDelayByLoading(float loading) const {
     // TODO: use typical buffer's input capacitance
-    return defaultBuf_.CalcAverageDelay(Sky130BufInvLib::DEFAULT_TRANS,
-                                        loading);
+    const float scale = 20.0;
+    return defaultBuf_.CalcAverageDelay(GetDefaultTrans(), loading * scale);
   }
 
   // TODO: use more practical values
-  int GetFanoutThreshold() const { return 4; }
+  int GetFanoutThreshold() const { return 3; }
   float GetLoadingThreshold() const { return GetVirtualBufCap() * 4; }
 
   bool NeedInsertBuffer(const NodeGroup &bufferdSinks) {
@@ -476,6 +518,9 @@ struct DpSolver {
   const OTTimingArc &driverArc_; // Driver's timing arc
   const BufNode *src_;
   const TechLib &libCells_;
+
+  std::optional<float> driverTrans_ = {};
+  void SetDriverTrans(float trans) { driverTrans_ = trans; }
 
   using BufNodeVec2 = std::array<BufNodeVec, 2>;
 
@@ -509,13 +554,13 @@ struct DpSolver {
       return true;
     }
 
-    bool ratGt = a->rat_ > b->rat_;
+    bool ratGt = a->rat_ >= b->rat_;
     if (a->ty_ == BufNodeType::Init && b->ty_ == BufNodeType::Init) {
       // Compare loading instead of inCap during merge child stage
-      bool loadingLt = a->loading_ < b->loading_;
+      bool loadingLt = a->loading_ <= b->loading_;
       return ratGt && loadingLt;
     }
-    bool inCapLt = a->inCap_ < b->inCap_;
+    bool inCapLt = a->inCap_ <= b->inCap_;
     return ratGt && inCapLt;
   }
 
@@ -529,6 +574,7 @@ struct DpSolver {
 
   // TODO: use taskflow to parallelize the dp tree building
   void BuildDpTree(bool multiThread = false);
+  void BuildSrcSolutions();
   void GenNodeSolutions(const BufNode *node);
   BufNodeVec GenSolutionsByPhase(BufNodeVec &insertBuf, BufNodeVec &insertInv);
   void GenRemoveBufferSolutions(BufNodeVec &candidates, BufNodeRbTree &rbt);
