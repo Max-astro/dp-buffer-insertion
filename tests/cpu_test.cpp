@@ -6,8 +6,10 @@
 class CpuTest : public ::testing::Test {
 protected:
   NodeMgr nodeMgr_;
-  Sky130BufInvLib lib_;
-  CpuTest() : nodeMgr_(1000), lib_() {}
+  // Sky130BufInvLib lib_;
+
+  ot::Timer timer_;
+  CpuTest() : nodeMgr_(1000), timer_() { Sky130Lib::InitMockTimer(timer_); }
 
   void SetUp() override {
     // Code here will be called immediately after the constructor (right
@@ -27,12 +29,12 @@ TEST(BufferingTest, DummyTestExampleP) {}
 
 TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   NetData net = NetData::GenRandomNet(30);
-  Sky130BufInvLib lib;
+  Sky130Lib lib(timer_);
 
-  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  ClusterSolver solver(nodeMgr_, net, lib.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // simple test
   BufNodeRbTree rbt;
@@ -107,12 +109,12 @@ bool CheckParetoFrontier(const DpSolver &dpSolver, BufNodeRbTree &rbt) {
 
 TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
   NetData net = NetData::GenRandomNet(1000);
-  Sky130BufInvLib lib;
+  Sky130Lib lib(timer_);
 
-  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  ClusterSolver solver(nodeMgr_, net, lib.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // src->ty_ = BufNodeType::Buffer; // hack for testing
   // simple test
@@ -127,12 +129,12 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
 
 TEST_F(CpuTest, ParetoFrontierTest_Loading) {
   NetData net = NetData::GenRandomNet(30);
-  Sky130BufInvLib lib;
+  Sky130Lib lib(timer_);
 
-  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  ClusterSolver solver(nodeMgr_, net, lib.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // simple test
   BufNodeRbTree rbt;
@@ -196,12 +198,12 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
 
 TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
   NetData net = NetData::GenRandomNet(1000);
-  Sky130BufInvLib lib;
+  Sky130Lib lib(timer_);
 
-  ClusterSolver solver(nodeMgr_, net, lib_.bufs_[2]);
+  ClusterSolver solver(nodeMgr_, net, lib.bufs_[2]);
   BufNode *src = solver.BuildBufferTree();
 
-  DpSolver dpSolver(nodeMgr_, src, lib, lib_.bufs_[2]);
+  DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // src->ty_ = BufNodeType::Buffer; // hack for testing
   // simple test
@@ -217,20 +219,21 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
 }
 
 TEST_F(CpuTest, CalcDelay_sky130) {
-  const BufLibCell &cell = lib_.bufs_[2];
-  const double tr = Sky130BufInvLib::DEFAULT_TRANS;
+  Sky130Lib lib(timer_);
+  const OTTimingArc &cell = lib.bufs_[2];
+  const float tr = lib.GetDefaultTrans();
 
   const double l1 = 0.002;
   const double l2 = 0.01;
   const double l3 = 0.05;
 
-  const double r1 = cell.CalcDelay(DelayType::Rise, tr, l1);
-  const double r2 = cell.CalcDelay(DelayType::Rise, tr, l2);
-  const double r3 = cell.CalcDelay(DelayType::Rise, tr, l3);
+  const double r1 = cell.CalcDelay(ot::RISE, ot::RISE, tr, l1);
+  const double r2 = cell.CalcDelay(ot::RISE, ot::RISE, tr, l2);
+  const double r3 = cell.CalcDelay(ot::RISE, ot::RISE, tr, l3);
 
-  const double f1 = cell.CalcDelay(DelayType::Fall, tr, l1);
-  const double f2 = cell.CalcDelay(DelayType::Fall, tr, l2);
-  const double f3 = cell.CalcDelay(DelayType::Fall, tr, l3);
+  const double f1 = cell.CalcDelay(ot::FALL, ot::FALL, tr, l1);
+  const double f2 = cell.CalcDelay(ot::FALL, ot::FALL, tr, l2);
+  const double f3 = cell.CalcDelay(ot::FALL, ot::FALL, tr, l3);
 
   EXPECT_LE(r1, r2);
   EXPECT_LE(r2, r3);
@@ -251,44 +254,15 @@ TEST_F(CpuTest, CalcDelay_sky130) {
 
 TEST_F(CpuTest, CalcDelay_ot) {
   using namespace ot;
-  ot::Timer timer;
 
-  // the first step is to read a library.
-  timer.read_celllib("../sky130_fd_sc_hd__tt_025C_1v80.lib")
-      .read_verilog("../tests/sky130.v");
-  // .read_verilog("../dataset/test_cases/case3.v");
-  // .read_sdc("../dataset/st.sdc");
-
-  timer.create_clock("vclk", 1.0);
-  timer.update_timing();
-
-  auto clk = timer.clocks().at("vclk");
-  float period = clk.period();
-
-  for (auto &pi : timer.primary_inputs()) {
-    FOR_EACH_EL_RF(el, rf) {
-      timer.set_at(pi.first, el, rf, 0.0);
-      timer.set_slew(pi.first, el, rf, 5.0);
-    }
-  }
-
-  for (auto &po : timer.primary_outputs()) {
-    FOR_EACH_EL_RF(el, rf) {
-      timer.set_rat(po.first, el, rf, el == MIN ? -1.0 : period);
-    }
-  }
-
-  timer.update_timing();
-  timer.dump_timer(std::cout);
-  EXPECT_TRUE(timer.report_timing(1, MAX).size() == 1);
-
-  Sky130Lib lib(timer);
-  const double tr = Sky130BufInvLib::DEFAULT_TRANS;
+  Sky130Lib lib(timer_);
+  Sky130BufInvLib oldLib;
+  const float tr = lib.GetDefaultTrans();
   EXPECT_NEAR(tr, lib.GetDefaultTrans(), 1e-6);
 
   const float loads[] = {0.002, 0.01, 0.05};
   for (int i = 0; i < lib.bufs_.size(); i++) {
-    auto &refLibCell = lib_.bufs_[i];
+    auto &refLibCell = oldLib.bufs_[i];
     auto &lc = lib.bufs_[i];
 
     EXPECT_TRUE(lc.arc_.cell_rise.has_value());
@@ -327,7 +301,7 @@ TEST_F(CpuTest, CalcDelay_ot) {
   }
 
   for (int i = 0; i < lib.invs_.size(); i++) {
-    auto &refLibCell = lib_.invs_[i];
+    auto &refLibCell = oldLib.invs_[i];
     auto &lc = lib.invs_[i];
 
     EXPECT_TRUE(lc.arc_.cell_rise.has_value());

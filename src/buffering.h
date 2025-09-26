@@ -68,6 +68,7 @@ struct OTTimingArc {
   float inCap_;
 
   float CalcDelay(ot::Tran irf, ot::Tran orf, float trans, float loading) const;
+  float CalcAverageDelay(float trans, float loading) const;
   float CalcBufDelay(ot::Tran irf, float trans, float loading) const;
   float CalcInvDelay(ot::Tran irf, float trans, float loading) const;
 
@@ -125,9 +126,6 @@ struct Nangate45Lib : public TechLib {
   const float GetDefaultTrans() const override { return 0.01; }
 
   Nangate45Lib(const ot::Timer &timer) : TechLib(timer) { InitLib(); }
-
-  // static const ot::Cellpin *GetCellpin(const ot::Timer &timer,
-  //                                      const std::string &cellName);
 };
 
 struct Sky130Lib : public TechLib {
@@ -148,8 +146,8 @@ struct Sky130Lib : public TechLib {
 
   Sky130Lib(const ot::Timer &timer) : TechLib(timer) { InitLib(); }
 
-  // static const ot::Cellpin *GetCellpin(const ot::Timer &timer,
-  //                                      const std::string &cellName);
+  // For testing
+  static void InitMockTimer(ot::Timer &timer);
 };
 
 // TODO: support other liberty files
@@ -159,11 +157,6 @@ struct Sky130BufInvLib {
   std::vector<BufLibCell> invs_;
 
   // sky130 lib
-  // constexpr static const std::string BUF_NAME = "sky130_fd_sc_hd__buf_";
-  // constexpr static const std::string INV_NAME = "sky130_fd_sc_hd__inv_";
-  // constexpr static const std::string INPUT_PIN = "A";
-  // constexpr static const std::string BUF_OUTPUT_PIN = "X";
-  // constexpr static const std::string INV_OUTPUT_PIN = "Y";
   static constexpr const char *BUF_NAME = "sky130_fd_sc_hd__buf_";
   static constexpr const char *INV_NAME = "sky130_fd_sc_hd__inv_";
   static constexpr const char *INPUT_PIN = "A";
@@ -179,19 +172,6 @@ struct Sky130BufInvLib {
   static constexpr float DEFAULT_TRANS = 0.01;
 
   Sky130BufInvLib();
-  // Sky130BufInvLib() : minDelay_(InvB[0]), minCap_(0.001) {
-  //   const float SCALE = 1.5;
-  //   char name[32];
-  //   for (int i = 0; i < 7; i++) {
-  //     snprintf(name, sizeof(name), "buf_X%zu", Sizes[i]);
-  //     bufs_.push_back(BufLibCell(name, BufK[i] * SCALE, BufB[i],
-  //     BufInCap[i]));
-
-  //     snprintf(name, sizeof(name), "inv_X%zu", Sizes[i]);
-  //     invs_.push_back(BufLibCell(name, InvK[i] * SCALE, InvB[i],
-  //     InvCap[i]));
-  //   }
-  // }
 };
 
 enum class BufNodeType {
@@ -228,7 +208,7 @@ struct BufNode {
   float inCap_ = 0.0;
   float loading_ = 0.0;
   float rat_ = std::numeric_limits<float>::max();
-  const BufLibCell *driver_;
+  const OTTimingArc *driver_;
   std::vector<BufNode *> children_;
 
   BufNode(uint32_t uid) : uid_(uid), driver_(nullptr) {}
@@ -250,11 +230,10 @@ struct BufNode {
     children_.push_back(child);
   }
 
-  void SetLibCell(const BufLibCell *libCell, bool isInv) {
+  void SetLibCell(const OTTimingArc *libCell, bool isInv, float trans) {
     driver_ = libCell;
     ty_ = isInv ? BufNodeType::Inverter : BufNodeType::Buffer;
-    float dly = libCell->CalcDelay(DelayType::Rise,
-                                   Sky130BufInvLib::DEFAULT_TRANS, loading_);
+    float dly = libCell->CalcAverageDelay(trans, loading_);
     assert(dly > 0);
     rat_ -= dly;
 
@@ -460,10 +439,10 @@ private:
 public:
   NodeMgr &nodeMgr_;
   const NetData &net_;
-  const BufLibCell &defaultBuf_;
+  const OTTimingArc &defaultBuf_;
 
   ClusterSolver(NodeMgr &nodeMgr, const NetData &net,
-                const BufLibCell &defaultBuf)
+                const OTTimingArc &defaultBuf)
       : nodeMgr_(nodeMgr), net_(net), defaultBuf_(defaultBuf) {}
 
   // TODO: use typical buffer's input capacitance
@@ -473,8 +452,8 @@ public:
 
   float GetBufDelayByLoading(float loading) const {
     // TODO: use typical buffer's input capacitance
-    return defaultBuf_.CalcDelay(DelayType::Rise,
-                                 Sky130BufInvLib::DEFAULT_TRANS, loading);
+    return defaultBuf_.CalcAverageDelay(Sky130BufInvLib::DEFAULT_TRANS,
+                                        loading);
   }
 
   // TODO: use more practical values
@@ -494,9 +473,9 @@ public:
 
 struct DpSolver {
   NodeMgr &nodeMgr_;
-  const BufLibCell &driverArc_; // Driver's timing arc
+  const OTTimingArc &driverArc_; // Driver's timing arc
   const BufNode *src_;
-  const Sky130BufInvLib &libCells_;
+  const TechLib &libCells_;
 
   using BufNodeVec2 = std::array<BufNodeVec, 2>;
 
@@ -505,21 +484,22 @@ struct DpSolver {
 
   static constexpr size_t DP_SIZE = 16;
 
-  DpSolver(NodeMgr &nodeMgr, const BufNode *src,
-           const Sky130BufInvLib &libCells, const BufLibCell &driverArc)
+  DpSolver(NodeMgr &nodeMgr, const BufNode *src, const TechLib &libCells,
+           const OTTimingArc &driverArc)
       : nodeMgr_(nodeMgr), src_(src), libCells_(libCells),
         driverArc_(driverArc) {}
 
   BufNodeVec2 InitDp(const BufNode *node);
 
   bool SimilarNodes(const BufNode *a, const BufNode *b) const {
-    bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.minDelay_;
+    bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.GetMinDelay();
     if (a->ty_ == BufNodeType::Init && b->ty_ == BufNodeType::Init) {
       // Compare loading instead of inCap during merge child stage
-      bool loadingEq = std::abs(a->loading_ - b->loading_) < libCells_.minCap_;
+      bool loadingEq =
+          std::abs(a->loading_ - b->loading_) < libCells_.GetMinCap();
       return ratEq && loadingEq;
     }
-    bool inCapEq = std::abs(a->inCap_ - b->inCap_) < libCells_.minCap_;
+    bool inCapEq = std::abs(a->inCap_ - b->inCap_) < libCells_.GetMinCap();
     return ratEq && inCapEq;
   }
 
@@ -561,6 +541,5 @@ struct DpSolver {
   void Solve(bool multiThread = false);
   BufNode *GetBestSolution() const;
 
-  static void ReportImprovement(const NetData &net, const BufNode *result,
-                                const BufLibCell &driverArc);
+  void ReportImprovement(const NetData &net, const BufNode *result);
 };

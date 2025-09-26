@@ -1,9 +1,9 @@
 #include "buffering.h"
 
-void Benchmark(const Sky130BufInvLib &lib) {
-  const BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-  for (size_t fanouts : {100, 500, 1000, 2000, 3000, 3500, 4000, 5000, 6000,
-                         7000, 8000}) {
+void Benchmark(const Sky130Lib &lib) {
+  const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  for (size_t fanouts :
+       {100, 500, 1000, 2000, 3000, 3500, 4000, 5000, 6000, 7000, 8000}) {
 
     NetData net =
         NetData::GenRandomNet(fanouts, 1.0f, 1.2f, 0.001, 0.01); // balanced
@@ -29,8 +29,10 @@ void Benchmark(const Sky130BufInvLib &lib) {
 int main(int argc, char **argv) {
   auto start = std::chrono::high_resolution_clock::now();
 
-  Sky130BufInvLib lib;
-  BufLibCell &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  ot::Timer timer;
+  Sky130Lib::InitMockTimer(timer);
+  Sky130Lib lib(timer);
+  OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
 
   auto end = std::chrono::high_resolution_clock::now();
   auto duration =

@@ -33,6 +33,12 @@ float OTTimingArc::CalcDelay(ot::Tran irf, ot::Tran orf, float trans,
   return dly.value();
 }
 
+float OTTimingArc::CalcAverageDelay(float trans, float loading) const {
+  float rise = arc_.cell_rise.value()(trans, loading);
+  float fall = arc_.cell_fall.value()(trans, loading);
+  return (rise + fall) / 2.0;
+}
+
 float OTTimingArc::CalcBufDelay(ot::Tran irf, float trans,
                                 float loading) const {
   return CalcDelay(irf, irf, trans, loading);
@@ -49,6 +55,35 @@ const ot::Cell *TechLib::GetCell(const std::string &cellName) {
   auto &cell = celllib->cells.at(cellName);
 
   return &cell;
+}
+
+void Sky130Lib::InitMockTimer(ot::Timer &timer) {
+  using namespace ot;
+
+  // the first step is to read a library.
+  timer.read_celllib("../sky130_fd_sc_hd__tt_025C_1v80.lib")
+      .read_verilog("../tests/sky130.v");
+
+  timer.create_clock("vclk", 1.0);
+  timer.update_timing();
+
+  auto clk = timer.clocks().at("vclk");
+  float period = clk.period();
+
+  for (auto &pi : timer.primary_inputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_at(pi.first, el, rf, 0.0);
+      timer.set_slew(pi.first, el, rf, 5.0);
+    }
+  }
+
+  for (auto &po : timer.primary_outputs()) {
+    FOR_EACH_EL_RF(el, rf) {
+      timer.set_rat(po.first, el, rf, el == MIN ? -1.0 : period);
+    }
+  }
+
+  timer.update_timing();
 }
 
 void TechLib::InitLib() {
@@ -118,7 +153,7 @@ void BufNode::EmitDOT(std::ofstream &os) const {
     loading += child->inCap_;
   }
 
-  std::string driverName = driver_ ? "\n" + driver_->name_ : "";
+  std::string driverName = driver_ ? "\n" + driver_->cell_->name : "";
 
   os << uid_ << " [label=\"" << uid_ << "\n"
      << GetBufNodeTypeStr(ty_) << driverName << "\nRAT: " << rat_;
@@ -392,7 +427,7 @@ void DpSolver::InsertLibCell(BufNodeVec &candidates, BufNodeRbTree &rbt,
     for (int i = 0; i < lib.size(); i++) {
       // Reuse the original node during the final iteration.
       BufNode *node = (i == lib.size() - 1) ? s : nodeMgr_.Dup(s);
-      node->SetLibCell(&lib[i], inv);
+      node->SetLibCell(&lib[i], inv, libCells_.GetDefaultTrans());
       // assert(node->CheckPhase(inv));
       MaintainFrontier(node, rbt);
     }
@@ -517,9 +552,8 @@ BufNode *DpSolver::GetBestSolution() const {
   BufNode *best = nullptr;
   float bestRat = -std::numeric_limits<float>::max();
   for (auto s : GetPosSolutions(src_)) {
-    float srcRat = s->rat_ - driverArc_.CalcDelay(
-                                 DelayType::Rise,
-                                 Sky130BufInvLib::DEFAULT_TRANS, s->loading_);
+    float srcRat = s->rat_ - driverArc_.CalcAverageDelay(
+                                 libCells_.GetDefaultTrans(), s->loading_);
     s->rat_ = srcRat;
     if (srcRat > bestRat) {
       best = s;
@@ -529,20 +563,19 @@ BufNode *DpSolver::GetBestSolution() const {
   return best;
 }
 
-void DpSolver::ReportImprovement(const NetData &net, const BufNode *result,
-                                 const BufLibCell &driverArc) {
+void DpSolver::ReportImprovement(const NetData &net, const BufNode *result) {
   float oldRat = std::numeric_limits<float>::max();
   float oldLoading = 0.0;
   for (auto &sink : net.sinks_) {
     oldRat = std::min(oldRat, sink.rat_);
     oldLoading += sink.inputCap_;
   }
-  float oldDelay = driverArc.CalcDelay(
-      DelayType::Rise, Sky130BufInvLib::DEFAULT_TRANS, oldLoading);
+  float oldDelay =
+      driverArc_.CalcAverageDelay(libCells_.GetDefaultTrans(), oldLoading);
   oldRat -= oldDelay;
 
-  float newDelay = driverArc.CalcDelay(
-      DelayType::Rise, Sky130BufInvLib::DEFAULT_TRANS, result->loading_);
+  float newDelay = driverArc_.CalcAverageDelay(libCells_.GetDefaultTrans(),
+                                               result->loading_);
 
   printf("Orignal Net's driver pin: RAT = %f, loading = %f, delay = %f;\n"
          "After buffer insertion  : RAT = %f, loading = %f, delay = %f\n\n",
