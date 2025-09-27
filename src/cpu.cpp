@@ -214,6 +214,22 @@ bool BufNode::CheckLoading() const {
   return eq;
 }
 
+void BufNode::ClearRemovedNodes() {
+  for (auto *node : TopologicalSort()) {
+    std::vector<BufNode *> newChildren;
+    for (auto *child : node->children_) {
+      if (child->ty_ == BufNodeType::Removed) {
+        for (auto *grandChild : child->children_) {
+          newChildren.push_back(grandChild);
+        }
+      } else {
+        newChildren.push_back(child);
+      }
+    }
+    node->children_ = std::move(newChildren);
+  }
+}
+
 std::vector<BufNode *> BufNode::TopologicalSort() const {
   std::vector<BufNode *> sorted;
   std::function<void(BufNode *)> dfs = [&](BufNode *node) {
@@ -615,19 +631,14 @@ SinkNode SinkNode::FromOTPin(const ot::Pin *pin) {
   return SinkNode(inCap, rat);
 }
 
-NetData NetData::FromTimer(const ot::Point *cellIn, const ot::Point *cellOut) {
-  auto *frPin = &cellIn->pin;
-  auto *toPin = &cellOut->pin;
-  auto *net = toPin->net();
-
+NetData NetData::CreateNetData(const ot::Pin *frPin, const ot::Pin *toPin,
+                               ot::Tran tran) {
   NetData netData;
   netData.driverArc_ = OTTimingArc::ExtractFromPins(frPin, toPin);
   netData.driverPin_ = toPin;
-  netData.driverTrans_ = frPin->slew(ot::MAX, cellIn->transition).value();
+  netData.driverTrans_ = tran;
 
-  std::cout << "driver: " << toPin->name() << " sinks = " << net->num_pins() - 1
-            << " driverTrans = " << netData.driverTrans_ << '\n';
-
+  auto *net = toPin->net();
   netData.sinks_.reserve(net->num_pins() - 1);
   uint32_t sinkIdx = 0;
   for (auto *pin : net->pins()) {
@@ -645,6 +656,48 @@ NetData NetData::FromTimer(const ot::Point *cellIn, const ot::Point *cellOut) {
   return netData;
 }
 
+NetData NetData::FromTimer(const ot::Point *cellIn, const ot::Point *cellOut) {
+  auto *frPin = &cellIn->pin;
+  auto *toPin = &cellOut->pin;
+  auto *net = toPin->net();
+
+  return CreateNetData(frPin, toPin, cellIn->transition);
+}
+
+NetData NetData::FromTimer(const ot::Net *net) {
+  auto *toPin = net->driver();
+  float rslack = toPin->slack(ot::MAX, ot::RISE).value();
+  float fslack = toPin->slack(ot::MAX, ot::FALL).value();
+  float critSlack = std::min(rslack, fslack);
+  ot::Tran critTran = ot::RISE;
+
+  std::cout << "toPin: " << toPin->name() << " rise slack: " << rslack << ", fall slack: " << fslack
+            << '\n';
+
+  // Find the critical fanin
+  const ot::Pin *critFr = nullptr;
+  for (auto *fanin : toPin->fanins()) {
+    assert(fanin->is_cell_arc());
+    auto &fr = fanin->from();
+    auto rslack = fr.slack(ot::MAX, ot::RISE).value();
+    auto fslack = fr.slack(ot::MAX, ot::FALL).value();
+    std::cout << "fr pin: " << fr.name() << "  rise slack: " << rslack
+              << ", fall slack: " << fslack << '\n';
+    if (std::abs(critSlack - rslack) < 1e-5) {
+      critFr = &fr;
+      critTran = ot::RISE;
+      break;
+    } else if (std::abs(critSlack - fslack) < 1e-5) {
+      critFr = &fr;
+      critTran = ot::FALL;
+      break;
+    }
+  }
+  assert(critFr && "Critical fanin not found");
+
+  return CreateNetData(critFr, toPin, critTran);
+}
+
 void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
                                const std::string &driverName,
                                BufNode *solution) {
@@ -657,24 +710,14 @@ void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
       ++removedCount;
     }
   }
+
+  solution->ClearRemovedNodes();
+
   auto tmp = solution->TopologicalSort();
   printf("Total node: %zu, removedCount = %d, remainCount = %zu\n",
          topoOrd.size(), removedCount, tmp.size());
 
   // preprocess: remove the removed nodes
-  for (auto *node : topoOrd) {
-    std::vector<BufNode *> newChildren;
-    for (auto *child : node->children_) {
-      if (child->ty_ == BufNodeType::Removed) {
-        for (auto *grandChild : child->children_) {
-          newChildren.push_back(grandChild);
-        }
-      } else {
-        newChildren.push_back(child);
-      }
-    }
-    node->children_ = std::move(newChildren);
-  }
 
   uint32_t gateIdx = 0;
   for (auto *node : topoOrd) {
@@ -733,4 +776,39 @@ void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
       timer.connect_pin(nodePinMap.at(child), netName);
     }
   }
+}
+
+float OtAPI::GetMaxDriverArcDelay(const ot::Net *net) {
+  using namespace ot;
+  float maxDelay = 0.0;
+  for (auto *fanin : net->driver()->fanins()) {
+    FOR_EACH_RF_RF(irf, orf) {
+      auto delay = fanin->delay(MAX, irf, orf);
+      if (delay.has_value()) {
+        maxDelay = std::max(maxDelay, delay.value());
+      }
+    }
+  }
+
+  return maxDelay;
+}
+
+NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer) {
+  constexpr int HIGH_FANOUT_THRESHOLD = 20;
+  constexpr float DELAY_THRESHOLD = 0.1;
+
+  NetQueue netQueue;
+  for (auto &&[name, net] : timer.nets()) {
+    if (net.driver() && net.driver()->primary_input()) {
+      continue;
+    }
+    if (net.num_pins() < HIGH_FANOUT_THRESHOLD) {
+      continue;
+    }
+    if (GetMaxDriverArcDelay(&net) < DELAY_THRESHOLD) {
+      continue;
+    }
+    netQueue.push(&net);
+  }
+  return netQueue;
 }

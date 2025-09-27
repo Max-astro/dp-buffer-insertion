@@ -1,4 +1,5 @@
 #include "buffering.h"
+#include <fstream>
 
 void Init(ot::Timer &timer, const char *vpath) {
   using namespace ot;
@@ -50,6 +51,26 @@ bool NeedBuffering(const ot::Point &fr, const ot::Point &to) {
   }
 
   return false;
+}
+
+void BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
+                          const TechLib &lib) {
+  NetData netData = NetData::FromTimer(net);
+  NodeMgr nodeMgr(netData.sinks_.size() * 100);
+
+  const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  ClusterSolver solver(nodeMgr, netData, defaultBuf);
+  BufNode *src = solver.BuildBufferTree();
+  // src->EmitDOT("nand45_src.dot");
+
+  DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
+  dpSolver.SetDriverTrans(netData.driverTrans_);
+  dpSolver.Solve();
+  // std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
+  //           << '\n';
+
+  auto *bestSolution = dpSolver.GetBestSolution();
+  netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
 }
 
 int main(int argc, char **argv) {
@@ -150,6 +171,35 @@ int main(int argc, char **argv) {
 
     break;
   }
+
+  {
+    auto netQue = OtAPI::CollectHighFanoutNets(timer);
+    std::cout << "High fanout nets num: " << netQue.size() << '\n';
+    int cnt = 0;
+    while (!netQue.empty() && cnt < 10000) {
+      auto net = netQue.top();
+      netQue.pop();
+      BufferHighFanoutNets(timer, net, lib);
+      // std::cout << "Buffered net: " << net->name() << '\n';
+      cnt++;
+    }
+  }
+
+  std::cout << "\n\n-------------- HFS buffered --------------\n";
+  timer.update_timing();
+  timer.dump_timer(std::cout);
+  std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+  std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+  {
+    auto paths = timer.report_timing(1, ot::MAX);
+    for (size_t i = 0; i < paths.size(); ++i) {
+      std::cout << "----- Critical Path -----\n";
+      std::cout << paths[i] << '\n';
+    }
+  }
+  std::cout << "\n\n-------------- Dump to `optimized.v` --------------\n";
+  std::ofstream ofs("optimized.v");
+  timer.dump_verilog(ofs, "top");
 
   return 0;
 }

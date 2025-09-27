@@ -263,6 +263,8 @@ struct BufNode {
 
   std::vector<BufNode *> TopologicalSort() const;
 
+  void ClearRemovedNodes();
+
   // Debug utils
   bool CheckPhase(bool inv) const;
   bool CheckLoading() const;
@@ -411,6 +413,9 @@ struct NetData {
                         const std::string &driverName, BufNode *solution);
 
   static NetData FromTimer(const ot::Point *cellIn, const ot::Point *cellOut);
+  static NetData FromTimer(const ot::Net *otNet);
+  static NetData CreateNetData(const ot::Pin *frPin, const ot::Pin *toPin,
+                               ot::Tran tran);
 
   static NetData GenRandomNet(size_t numSinks, float ratMin = 1.0f,
                               float ratMax = 100.0f, float loadMin = 0.0001f,
@@ -588,4 +593,19 @@ struct DpSolver {
   BufNode *GetBestSolution() const;
 
   void ReportImprovement(const NetData &net, const BufNode *result);
+};
+
+struct NetComparator {
+  bool operator()(const ot::Net *a, const ot::Net *b) const {
+    return a->num_pins() > b->num_pins();
+  }
+};
+
+using NetQueue =
+    std::priority_queue<const ot::Net *, std::vector<const ot::Net *>,
+                        NetComparator>;
+
+struct OtAPI {
+  static float GetMaxDriverArcDelay(const ot::Net *net);
+  static NetQueue CollectHighFanoutNets(const ot::Timer &timer);
 };
