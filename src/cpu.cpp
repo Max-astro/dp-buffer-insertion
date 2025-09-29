@@ -251,6 +251,7 @@ BufNode *ClusterSolver::BuildBufferTree() {
   NodeGroup group;
   while (!maxHeap.empty()) {
     BufNode *node = maxHeap.top();
+    // TODO: remove magic number 2.0
     if (group.sinks_.size() > 1 && group.rat_ - node->rat_ > 2.0) {
       BufNode *buf = InsertBuffer(group);
       maxHeap.push(buf);
@@ -725,21 +726,27 @@ NetData NetData::FromTimer(const ot::Net *net) {
   for (auto *fanin : toPin->fanins()) {
     assert(fanin->is_cell_arc());
     auto &fr = fanin->from();
-    auto rslack = fr.slack(ot::MAX, ot::RISE).value();
-    auto fslack = fr.slack(ot::MAX, ot::FALL).value();
-    std::cout << "fr pin: " << fr.name() << "  rise slack: " << rslack
-              << ", fall slack: " << fslack << '\n';
-    if (std::abs(critSlack - rslack) < 1e-5) {
+    auto rslack = fr.slack(ot::MAX, ot::RISE);
+    auto fslack = fr.slack(ot::MAX, ot::FALL);
+    // std::cout << "fr pin: " << fr.name() << "  rise slack: "
+    //           << rslack.value_or(-std::numeric_limits<float>::max())
+    //           << ", fall slack: "
+    //           << fslack.value_or(-std::numeric_limits<float>::max()) << '\n';
+    if (rslack.has_value() && std::abs(critSlack - rslack.value()) < 1e-4) {
       critFr = &fr;
       critTran = ot::RISE;
       break;
-    } else if (std::abs(critSlack - fslack) < 1e-5) {
+    } else if (fslack.has_value() &&
+               std::abs(critSlack - fslack.value()) < 1e-4) {
       critFr = &fr;
       critTran = ot::FALL;
       break;
     }
   }
-  assert(critFr && "Critical fanin not found");
+  // assert(critFr && "Critical fanin not found");
+  if (!critFr) {
+    critFr = &toPin->fanins().front()->from();
+  }
 
   return CreateNetData(critFr, toPin, critTran);
 }
@@ -856,7 +863,10 @@ NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer) {
 
   NetQueue netQueue;
   for (auto &&[name, net] : timer.nets()) {
-    if (net.driver() && net.driver()->primary_input()) {
+    if (!net.driver()) {
+      continue;
+    }
+    if (net.driver()->primary_input()) {
       continue;
     }
     if (!IsHighFanoutNet(net)) {

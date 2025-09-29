@@ -20,7 +20,6 @@
 #include <ot/timer/timer.hpp>
 #pragma pop_macro("DEBUG")
 
-
 enum class DelayType { Rise, Fall };
 
 struct OTTimingArc {
@@ -368,10 +367,6 @@ struct NetData {
 };
 
 inline auto ClusterNodeCmp = [](BufNode *a, BufNode *b) {
-  // if (a->CountBufDepth() != b->CountBufDepth()) {
-  //   return a->CountBufDepth() > b->CountBufDepth();
-  // }
-
   float va = a->rat_, vb = b->rat_;
   va -= std::pow(2, a->CountBufDepth()) / 2.0;
   vb -= std::pow(2, b->CountBufDepth()) / 2.0;

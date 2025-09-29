@@ -1,11 +1,11 @@
 #include "buffering.h"
+#include <cstring>
 #include <fstream>
 
-void Init(ot::Timer &timer, const char *vpath) {
+void InitTimer(ot::Timer &timer, const char *lpath, const char *vpath) {
   using namespace ot;
   // the first step is to read a library.
-  timer.read_celllib("../NangateOpenCellLibrary_typical.lib")
-      .read_verilog(vpath);
+  timer.read_celllib(lpath).read_verilog(vpath);
 
   timer.create_clock("vclk", 1.0);
   timer.update_timing();
@@ -66,7 +66,7 @@ float GetBufDelayOnPath(const ot::Path &path) {
   return bufDly;
 }
 
-void BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
+bool BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
                           const TechLib &lib) {
   NetData netData = NetData::FromTimer(net);
   NodeMgr nodeMgr(netData.sinks_.size() * 100);
@@ -84,31 +84,15 @@ void BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
 
   auto *bestSolution = dpSolver.GetBestSolution();
   if (!dpSolver.IsImproved(netData, bestSolution)) {
-    return;
+    return false;
   }
-  // dpSolver.ReportImprovement(netData, bestSolution);
+  dpSolver.ReportImprovement(netData, bestSolution);
   netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
+  return true;
 }
 
-int main(int argc, char **argv) {
-  if (argc != 2) {
-    std::cerr << "Usage: " << argv[0] << " <verilog file>" << std::endl;
-    return 1;
-  }
-
-  char *vpath = argv[1];
-  ot::Timer timer;
-  Init(timer, vpath);
-
-  // ------------------------------
-  std::cout << "Init WNS: " << *timer.report_wns({ot::MAX}) << '\n';
-  std::cout << "Area: " << *timer.report_area() << '\n';
-
+void DisplayCriticalPathBuffering(ot::Timer &timer, const TechLib &lib) {
   auto paths = timer.report_timing(1, ot::MAX);
-  for (size_t i = 0; i < paths.size(); ++i) {
-    std::cout << "----- Critical Path " << i << " -----\n";
-    std::cout << paths[i] << '\n';
-  }
 
   std::vector<std::pair<const ot::Point *, const ot::Point *>> bufferingArcs;
   std::optional<float> prev_at;
@@ -133,8 +117,6 @@ int main(int argc, char **argv) {
   // }
   // std::cout << "--------------------------------\n\n";
 
-  Nangate45Lib lib(timer);
-
   for (auto &&[fr, to] : bufferingArcs) {
     NetData netData = NetData::FromTimer(fr, to);
     std::cout << "Net Data: " << fr->pin.name() << " -> " << to->pin.name()
@@ -148,7 +130,7 @@ int main(int argc, char **argv) {
     std::cout << "----------------OPT----------------\n";
 
     {
-      OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+      const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
       NodeMgr nodeMgr(netData.sinks_.size() * 100);
       ClusterSolver solver(nodeMgr, netData, defaultBuf);
       BufNode *src = solver.BuildBufferTree();
@@ -192,32 +174,99 @@ int main(int argc, char **argv) {
 
     break;
   }
+}
 
-  {
-    auto netQue = OtAPI::CollectHighFanoutNets(timer);
-    auto net = netQue.top();
-    NetData netData = NetData::FromTimer(net);
-    NodeMgr nodeMgr(netData.sinks_.size() * 100);
+void DisplayHFSBuffering(ot::Timer &timer, const TechLib &lib) {
+  auto netQue = OtAPI::CollectHighFanoutNets(timer);
+  auto net = netQue.top();
+  NetData netData = NetData::FromTimer(net);
+  NodeMgr nodeMgr(netData.sinks_.size() * 100);
 
-    const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
-    ClusterSolver solver(nodeMgr, netData, defaultBuf);
-    BufNode *src = solver.BuildBufferTree();
-    src->EmitDOT("HFS_src.dot");
+  const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+  ClusterSolver solver(nodeMgr, netData, defaultBuf);
+  BufNode *src = solver.BuildBufferTree();
+  src->EmitDOT("HFS_src.dot");
 
-    DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
-    dpSolver.SetDriverTrans(netData.driverTrans_);
-    dpSolver.Solve();
-    // std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
-    //           << '\n';
+  DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
+  dpSolver.SetDriverTrans(netData.driverTrans_);
+  dpSolver.Solve();
+  // std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
+  //           << '\n';
 
-    auto *bestSolution = dpSolver.GetBestSolution();
-    dpSolver.ReportImprovement(netData, bestSolution);
-    bestSolution->EmitDOT("HFS_best.dot");
+  auto *bestSolution = dpSolver.GetBestSolution();
+  dpSolver.ReportImprovement(netData, bestSolution);
+  bestSolution->EmitDOT("HFS_best.dot");
 
-    // dpSolver.ReportImprovement(netData, bestSolution);
-    // netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
+  // dpSolver.ReportImprovement(netData, bestSolution);
+  // netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
+}
+
+static const char *lpath = nullptr;
+static const char *vpath = nullptr;
+static const char *output = nullptr;
+
+void ParseArgs(int argc, char **argv) {
+  // Parse command line arguments
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-lib") == 0) {
+      if (i + 1 < argc) {
+        lpath = argv[++i];
+      } else {
+        std::cerr << "Error: -lib requires a library file path" << std::endl;
+        return;
+      }
+    } else if (strcmp(argv[i], "-o") == 0) {
+      if (i + 1 < argc) {
+        output = argv[++i];
+      } else {
+        std::cerr << "Error: -o requires an output file path" << std::endl;
+        return;
+      }
+    } else if (argv[i][0] != '-') {
+      // First non-dashed argument is the verilog file
+      if (vpath == nullptr) {
+        vpath = argv[i];
+      } else {
+        std::cerr << "Error: Multiple verilog files specified" << std::endl;
+        return;
+      }
+    } else {
+      std::cerr << "Error: Unknown option " << argv[i] << std::endl;
+      return;
+    }
+  }
+}
+
+int main(int argc, char **argv) {
+  ParseArgs(argc, argv);
+  // Check required arguments
+  if (lpath == nullptr) {
+    std::cerr << "Error: Library file path required (-lib <lpath>)"
+              << std::endl;
+    return 1;
+  }
+  if (vpath == nullptr) {
+    std::cerr << "Error: Verilog file path required" << std::endl;
+    return 1;
+  }
+  if (output == nullptr) {
+    output = "optimized.v"; // Default output file
   }
 
+  ot::Timer timer;
+  InitTimer(timer, lpath, vpath);
+
+  // ------------------------------
+  std::cout << "Init WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+  std::cout << "Area: " << *timer.report_area() << '\n';
+
+  auto paths = timer.report_timing(1, ot::MAX);
+  for (size_t i = 0; i < paths.size(); ++i) {
+    std::cout << "----- Critical Path " << i << " -----\n";
+    std::cout << paths[i] << '\n';
+  }
+
+  Nangate45Lib lib(timer);
   std::unordered_set<std::string> bufferedNets;
 
   // // Strategy 1: buffing high fanout nets
@@ -245,7 +294,7 @@ int main(int argc, char **argv) {
   //     cnt++;
   //   }
 
-  //   std::cout << "\n\n-------------- HFS buffering: " << loop
+  //   std::cout << "\n\n-------------- Buffering loop: " << loop
   //             << " --------------\n";
   //   timer.update_timing();
   //   timer.dump_timer(std::cout);
@@ -286,11 +335,16 @@ int main(int argc, char **argv) {
                   << net->driver()->slack(ot::MAX, ot::FALL).value() << '\n';
 
         bufferedNets.emplace(net->name());
-        BufferHighFanoutNets(timer, net, lib);
+        bool improved = BufferHighFanoutNets(timer, net, lib);
+        // if (improved) {
+        //   std::cout << "Timing improved, commited to timer\n\n";
+        // } else {
+        //   std::cout << "Timing not improved\n\n";
+        // }
       }
     }
 
-    std::cout << "\n\n-------------- HFS buffering: " << loop
+    std::cout << "\n\n-------------- Buffering loop: " << loop
               << " --------------\n";
     timer.update_timing();
     timer.dump_timer(std::cout);
@@ -309,8 +363,11 @@ int main(int argc, char **argv) {
     loop++;
   }
 
-  std::cout << "\n\n-------------- Dump to `optimized.v` --------------\n";
-  std::ofstream ofs("optimized.v");
+  std::cout << "Final WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+  std::cout << "Final Area: " << *timer.report_area() << '\n';
+
+  std::cout << "\n\n-------------- Dump to `" << output << "` --------------\n";
+  std::ofstream ofs(output);
   timer.dump_verilog(ofs, "top");
 
   return 0;
