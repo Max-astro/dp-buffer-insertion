@@ -135,7 +135,7 @@ struct Nangate45Lib : public TechLib {
   const float GetMinCap() const override {
     return 0.1; // fF (1e-15 F) }
   }
-  const float GetDefaultTrans() const override { return 0.01; }
+  const float GetDefaultTrans() const override { return 0.02; }
 
   Nangate45Lib(const ot::Timer &timer) : TechLib(timer) { InitLib(); }
 };
@@ -261,6 +261,7 @@ struct BufNode {
     inCap_ = loading_;
   }
 
+  uint32_t CountBufDepth() const;
   std::vector<BufNode *> TopologicalSort() const;
 
   void ClearRemovedNodes();
@@ -437,25 +438,50 @@ struct NetData {
   }
 };
 
-inline auto NodeRatLT = [](BufNode *a, BufNode *b) {
-  if (std::abs(a->rat_ - b->rat_) < 1e-7) {
+inline auto ClusterNodeCmp = [](BufNode *a, BufNode *b) {
+  // if (a->CountBufDepth() != b->CountBufDepth()) {
+  //   return a->CountBufDepth() > b->CountBufDepth();
+  // }
+
+  float va = a->rat_, vb = b->rat_;
+  va -= std::pow(2, a->CountBufDepth()) / 2.0;
+  vb -= std::pow(2, b->CountBufDepth()) / 2.0;
+  if (std::abs(va - vb) < 1e-7) {
     return a->uid_ < b->uid_;
   }
-  return a->rat_ < b->rat_;
+  return va < vb;
 };
 
-inline auto NodeRatGT = [](BufNode *a, BufNode *b) {
-  /// For set comparsion has a stable result, shouldn't compare uid
-  // if (std::abs(a->rat_ - b->rat_) < 1e-7) {
-  //   return a->uid_ > b->uid_;
-  // }
-  return a->rat_ > b->rat_;
+struct ParetoFrontierCmp {
+  ParetoFrontierCmp(float dlyEps, float capEps)
+      : dlyEps_(dlyEps), capEps_(capEps) {}
+
+  bool operator()(const BufNode *a, const BufNode *b) const {
+    bool ratEq = std::abs(a->rat_ - b->rat_) < dlyEps_;
+    if (!ratEq) {
+      return a->rat_ > b->rat_;
+    }
+
+    bool capEq, capLt;
+    if (a->ty_ == BufNodeType::Init) {
+      capEq = std::abs(a->loading_ - b->loading_) < capEps_;
+      capLt = a->loading_ < b->loading_;
+    } else {
+      capEq = std::abs(a->inCap_ - b->inCap_) < capEps_;
+      capLt = a->inCap_ < b->inCap_;
+    }
+
+    return capEq || capLt;
+  }
+
+  float dlyEps_;
+  float capEps_;
 };
 
-using RatHeap =
-    std::priority_queue<BufNode *, std::vector<BufNode *>, decltype(NodeRatLT)>;
+using RatHeap = std::priority_queue<BufNode *, std::vector<BufNode *>,
+                                    decltype(ClusterNodeCmp)>;
 
-using BufNodeRbTree = std::set<BufNode *, decltype(NodeRatGT)>;
+using BufNodeRbTree = std::set<BufNode *, ParetoFrontierCmp>;
 
 struct ClusterSolver {
 private:
@@ -489,7 +515,7 @@ public:
 
   // TODO: use typical buffer's input capacitance
   float GetVirtualBufCap() const { return defaultBuf_.inCap_; }
-  float GetDefaultTrans() const { return 0.05; }
+  float GetDefaultTrans() const { return 0.02; }
 
   float GetVirtualBufDelay() const {
     // Use FO4 delay
@@ -504,8 +530,8 @@ public:
   }
 
   // TODO: use more practical values
-  int GetFanoutThreshold() const { return 3; }
-  float GetLoadingThreshold() const { return GetVirtualBufCap() * 4; }
+  int GetFanoutThreshold() const { return 5; }
+  float GetLoadingThreshold() const { return GetVirtualBufCap() * 6; }
 
   bool NeedInsertBuffer(const NodeGroup &bufferdSinks) {
     return bufferdSinks.loading_ > GetLoadingThreshold() ||
@@ -514,6 +540,11 @@ public:
 
   BufNode *InsertBuffer(NodeGroup &group);
   BufNode *BuildBufferTree();
+
+  // byGroup:
+  // true : drive bare sinks by one buffer
+  // false: each bare sinks will be driven by one buffer
+  void SinkWiseBuffer(BufNode *src, bool byGroup = false);
 
   // bool StopCriteron(RatHeap &maxHeap, NodeGroup &group) {}
 };
@@ -559,14 +590,18 @@ struct DpSolver {
       return true;
     }
 
-    bool ratGt = a->rat_ >= b->rat_;
+    bool ratEq = std::abs(a->rat_ - b->rat_) < libCells_.GetMinDelay();
+    bool ratGE = a->rat_ > b->rat_ || ratEq;
     if (a->ty_ == BufNodeType::Init && b->ty_ == BufNodeType::Init) {
       // Compare loading instead of inCap during merge child stage
-      bool loadingLt = a->loading_ <= b->loading_;
-      return ratGt && loadingLt;
+      bool loadingEq =
+          std::abs(a->loading_ - b->loading_) < libCells_.GetMinCap();
+      bool loadingLE = a->loading_ < b->loading_ || loadingEq;
+      return ratGE && loadingLE;
     }
-    bool inCapLt = a->inCap_ <= b->inCap_;
-    return ratGt && inCapLt;
+    bool inCapEq = std::abs(a->inCap_ - b->inCap_) < libCells_.GetMinCap();
+    bool inCapLE = a->inCap_ < b->inCap_ || inCapEq;
+    return ratGE && inCapLE;
   }
 
   const BufNodeVec &GetPosSolutions(const BufNode *node) const {
@@ -575,6 +610,11 @@ struct DpSolver {
 
   const BufNodeVec &GetNegSolutions(const BufNode *node) const {
     return dp_.at(node->uid_)[1];
+  }
+
+  BufNodeRbTree CreateParetoFrontierKeeper() const {
+    return BufNodeRbTree(
+        ParetoFrontierCmp(libCells_.GetMinDelay(), libCells_.GetMinCap()));
   }
 
   // TODO: use taskflow to parallelize the dp tree building
@@ -592,12 +632,14 @@ struct DpSolver {
   void Solve(bool multiThread = false);
   BufNode *GetBestSolution() const;
 
+  bool IsImproved(const NetData &net, const BufNode *result) const;
+
   void ReportImprovement(const NetData &net, const BufNode *result);
 };
 
 struct NetComparator {
   bool operator()(const ot::Net *a, const ot::Net *b) const {
-    return a->num_pins() > b->num_pins();
+    return a->num_pins() < b->num_pins();
   }
 };
 
@@ -607,5 +649,6 @@ using NetQueue =
 
 struct OtAPI {
   static float GetMaxDriverArcDelay(const ot::Net *net);
+  static bool IsHighFanoutNet(const ot::Net &net);
   static NetQueue CollectHighFanoutNets(const ot::Timer &timer);
 };

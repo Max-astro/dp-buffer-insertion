@@ -53,6 +53,19 @@ bool NeedBuffering(const ot::Point &fr, const ot::Point &to) {
   return false;
 }
 
+float GetBufDelayOnPath(const ot::Path &path) {
+  float bufDly = 0.0;
+  std::optional<float> prev_at;
+  for (const auto &p : path) {
+    if (p.pin.name()[0] == 'B' && p.pin.name()[1] == 'U' &&
+        p.pin.name()[2] == 'F') {
+      bufDly += p.at - prev_at.value_or(0.0);
+    }
+    prev_at = p.at;
+  }
+  return bufDly;
+}
+
 void BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
                           const TechLib &lib) {
   NetData netData = NetData::FromTimer(net);
@@ -70,6 +83,10 @@ void BufferHighFanoutNets(ot::Timer &timer, const ot::Net *net,
   //           << '\n';
 
   auto *bestSolution = dpSolver.GetBestSolution();
+  if (!dpSolver.IsImproved(netData, bestSolution)) {
+    return;
+  }
+  // dpSolver.ReportImprovement(netData, bestSolution);
   netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
 }
 
@@ -108,12 +125,13 @@ int main(int argc, char **argv) {
     ++toIt;
   }
 
-  std::cout << "--------------------------------\n";
-  std::cout << "Buffering Drivers: " << bufferingArcs.size() << '\n';
-  for (const auto &p : bufferingArcs) {
-    std::cout << p.first->pin.name() << " -> " << p.second->pin.name() << '\n';
-  }
-  std::cout << "--------------------------------\n\n";
+  // std::cout << "--------------------------------\n";
+  // std::cout << "Buffering Drivers: " << bufferingArcs.size() << '\n';
+  // for (const auto &p : bufferingArcs) {
+  //   std::cout << p.first->pin.name() << " -> " << p.second->pin.name() <<
+  //   '\n';
+  // }
+  // std::cout << "--------------------------------\n\n";
 
   Nangate45Lib lib(timer);
 
@@ -121,7 +139,8 @@ int main(int argc, char **argv) {
     NetData netData = NetData::FromTimer(fr, to);
     std::cout << "Net Data: " << fr->pin.name() << " -> " << to->pin.name()
               << ", toRAT = " << *to->pin.rat(ot::MAX, ot::RISE) << " "
-              << *to->pin.rat(ot::MAX, ot::FALL) << '\n';
+              << *to->pin.rat(ot::MAX, ot::FALL)
+              << ", fanout = " << to->pin.num_fanouts() << '\n';
 
     // for (auto &sink : netData.sinks_) {
     //   std::cout << "Sink: " << sink.inputCap_ << " " << sink.rat_ << '\n';
@@ -141,15 +160,17 @@ int main(int argc, char **argv) {
       std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
                 << '\n';
 
-      int i = 0;
-      for (auto s : dpSolver.GetPosSolutions(src)) {
-        std::cout << s->rat_ << " " << s->inCap_ << " " << s->loading_ << '\n';
-        std::string fname = "nand45_result_" + std::to_string(i++) + ".dot";
-        s->EmitDOT(fname.c_str());
-      }
+      // int i = 0;
+      // for (auto s : dpSolver.GetPosSolutions(src)) {
+      //   std::cout << s->rat_ << " " << s->inCap_ << " " << s->loading_ <<
+      //   '\n'; std::string fname = "nand45_result_" + std::to_string(i++) +
+      //   ".dot"; s->EmitDOT(fname.c_str());
+      // }
       std::cout << "--------------------------------\n";
       auto *bestSolution = dpSolver.GetBestSolution();
       bestSolution->EmitDOT("nand45_best.dot");
+
+      dpSolver.ReportImprovement(netData, bestSolution);
 
       netData.CommitBufferTree(timer, lib, fr->pin.gate()->name(),
                                bestSolution);
@@ -174,29 +195,120 @@ int main(int argc, char **argv) {
 
   {
     auto netQue = OtAPI::CollectHighFanoutNets(timer);
-    std::cout << "High fanout nets num: " << netQue.size() << '\n';
-    int cnt = 0;
-    while (!netQue.empty() && cnt < 10000) {
-      auto net = netQue.top();
-      netQue.pop();
-      BufferHighFanoutNets(timer, net, lib);
-      // std::cout << "Buffered net: " << net->name() << '\n';
-      cnt++;
-    }
+    auto net = netQue.top();
+    NetData netData = NetData::FromTimer(net);
+    NodeMgr nodeMgr(netData.sinks_.size() * 100);
+
+    const OTTimingArc &defaultBuf = lib.bufs_[2]; // Use a medium size buffer
+    ClusterSolver solver(nodeMgr, netData, defaultBuf);
+    BufNode *src = solver.BuildBufferTree();
+    src->EmitDOT("HFS_src.dot");
+
+    DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
+    dpSolver.SetDriverTrans(netData.driverTrans_);
+    dpSolver.Solve();
+    // std::cout << "DP solutions num: " << dpSolver.GetPosSolutions(src).size()
+    //           << '\n';
+
+    auto *bestSolution = dpSolver.GetBestSolution();
+    dpSolver.ReportImprovement(netData, bestSolution);
+    bestSolution->EmitDOT("HFS_best.dot");
+
+    // dpSolver.ReportImprovement(netData, bestSolution);
+    // netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
   }
 
-  std::cout << "\n\n-------------- HFS buffered --------------\n";
-  timer.update_timing();
-  timer.dump_timer(std::cout);
-  std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
-  std::cout << "Optimized Area: " << *timer.report_area() << '\n';
-  {
-    auto paths = timer.report_timing(1, ot::MAX);
-    for (size_t i = 0; i < paths.size(); ++i) {
-      std::cout << "----- Critical Path -----\n";
-      std::cout << paths[i] << '\n';
+  std::unordered_set<std::string> bufferedNets;
+
+  // // Strategy 1: buffing high fanout nets
+  // int loop = 0;
+  // while (loop < 30) {
+  //   auto netQue = OtAPI::CollectHighFanoutNets(timer);
+  //   std::cout << "High fanout nets num: " << netQue.size() << '\n';
+  //   if (netQue.empty()) {
+  //     break;
+  //   }
+  //   int cnt = 0;
+  //   while (!netQue.empty() && cnt < 30) {
+  //     auto net = netQue.top();
+  //     netQue.pop();
+  //     if (bufferedNets.count(net->name())) {
+  //       continue;
+  //     }
+  //     bufferedNets.emplace(net->name());
+
+  //     BufferHighFanoutNets(timer, net, lib);
+  //     std::cout << "Buffering net: " << net->name()
+  //               << ", fanout: " << net->num_pins() << ", slack: "
+  //               << net->driver()->slack(ot::MAX, ot::RISE).value() << ", "
+  //               << net->driver()->slack(ot::MAX, ot::FALL).value() << '\n';
+  //     cnt++;
+  //   }
+
+  //   std::cout << "\n\n-------------- HFS buffering: " << loop
+  //             << " --------------\n";
+  //   timer.update_timing();
+  //   timer.dump_timer(std::cout);
+  //   std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+  //   std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+  //   {
+  //     auto paths = timer.report_timing(1, ot::MAX);
+  //     std::cout << "# Critical Path Buf Delay: " <<
+  //     GetBufDelayOnPath(paths[0])
+  //               << '\n';
+  //     for (size_t i = 0; i < paths.size(); ++i) {
+  //       std::cout << "----- Critical Path -----\n";
+  //       std::cout << paths[i] << '\n';
+  //     }
+  //   }
+  //   loop++;
+  // }
+
+  // Strategy 2: buffing critical paths
+  int loop = 0;
+  while (loop < 30) {
+    auto paths = timer.report_timing(10, ot::MAX);
+    for (auto &&p : paths) {
+      for (auto &&point : p) {
+        if (point.pin.is_input() || point.pin.primary_output()) {
+          continue;
+        }
+        auto net = point.pin.net();
+        if (!OtAPI::IsHighFanoutNet(*net)) {
+          continue;
+        }
+        if (bufferedNets.count(net->name())) {
+          continue;
+        }
+        std::cout << "Buffering net: " << net->name()
+                  << ", fanout: " << net->num_pins() << ", slack: "
+                  << net->driver()->slack(ot::MAX, ot::RISE).value() << ", "
+                  << net->driver()->slack(ot::MAX, ot::FALL).value() << '\n';
+
+        bufferedNets.emplace(net->name());
+        BufferHighFanoutNets(timer, net, lib);
+      }
     }
+
+    std::cout << "\n\n-------------- HFS buffering: " << loop
+              << " --------------\n";
+    timer.update_timing();
+    timer.dump_timer(std::cout);
+    std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+    std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+    {
+      auto paths = timer.report_timing(1, ot::MAX);
+      std::cout << "# Critical Path Buf Delay: " << GetBufDelayOnPath(paths[0])
+                << '\n';
+      for (size_t i = 0; i < paths.size(); ++i) {
+        std::cout << "----- Critical Path -----\n";
+        std::cout << paths[i] << '\n';
+      }
+    }
+
+    loop++;
   }
+
   std::cout << "\n\n-------------- Dump to `optimized.v` --------------\n";
   std::ofstream ofs("optimized.v");
   timer.dump_verilog(ofs, "top");

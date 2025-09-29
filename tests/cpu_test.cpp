@@ -37,12 +37,12 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // simple test
-  BufNodeRbTree rbt;
+  BufNodeRbTree rbt = dpSolver.CreateParetoFrontierKeeper();
 
   auto *p1 = nodeMgr_.Alloc();
   p1->ty_ = BufNodeType::Buffer;
   p1->rat_ = 10.0;
-  p1->inCap_ = 0.1;
+  p1->inCap_ = 1.1;
   dpSolver.MaintainFrontier(p1, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
@@ -51,7 +51,7 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   auto *p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 10.0;
-  p->inCap_ = 0.09;
+  p->inCap_ = 1.09;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
@@ -62,7 +62,7 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 9.0;
-  p->inCap_ = 0.2;
+  p->inCap_ = 1.2;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
@@ -72,7 +72,7 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 9.0;
-  p->inCap_ = 0.05;
+  p->inCap_ = 1.05;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 2);
@@ -81,7 +81,7 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 12.0;
-  p->inCap_ = 0.35;
+  p->inCap_ = 1.35;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 3);
@@ -90,21 +90,85 @@ TEST_F(CpuTest, ParetoFrontierTest_InCap) {
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 15.0;
-  p->inCap_ = 0.01;
+  p->inCap_ = 0.09;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
   EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
 
+  auto *prev = p;
   // similar element
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Buffer;
   p->rat_ = 15.001;
-  p->inCap_ = 0.0101;
+  p->inCap_ = 0.0901;
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
-  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+  EXPECT_EQ((*rbt.begin())->uid_, prev->uid_);
+
+  // keep
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
+  p->rat_ = 11.1;
+  p->inCap_ = 0.05;
+  dpSolver.MaintainFrontier(p, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  EXPECT_EQ((*rbt.rbegin())->uid_, p->uid_);
+
+  // rat equal, inCap less, inserted
+  p = nodeMgr_.Alloc();
+  p->ty_ = BufNodeType::Buffer;
+  p->rat_ = 11.1;
+  p->inCap_ = 0.01;
+  dpSolver.MaintainFrontier(p, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  EXPECT_EQ((*rbt.rbegin())->uid_, p->uid_);
+
+  // rat equal, larger inCap, not inserted
+  auto *pp = nodeMgr_.Alloc();
+  pp->ty_ = BufNodeType::Buffer;
+  pp->rat_ = 11.1;
+  pp->inCap_ = 0.05;
+  dpSolver.MaintainFrontier(pp, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  EXPECT_EQ((*rbt.rbegin())->uid_, p->uid_);
+
+  // make sure uid wouldn't effect the result
+  auto *pOld = nodeMgr_.Alloc();
+  auto *pNew = nodeMgr_.Alloc();
+  pOld->ty_ = BufNodeType::Buffer;
+  pOld->rat_ = 11.1;
+  pOld->inCap_ = 0.005;
+  pNew->ty_ = BufNodeType::Buffer;
+  pNew->rat_ = 11.1;
+  pNew->inCap_ = 0.008;
+
+  dpSolver.MaintainFrontier(pNew, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  dpSolver.MaintainFrontier(pOld, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  EXPECT_EQ((*rbt.rbegin())->uid_, pOld->uid_);
+
+  auto it = rbt.begin();
+  it++;
+  rbt.erase(it);
+  EXPECT_EQ(rbt.size(), 1);
+
+  // swap new and old
+  pOld = nodeMgr_.Alloc();
+  pNew = nodeMgr_.Alloc();
+  pOld->ty_ = BufNodeType::Buffer;
+  pOld->rat_ = 11.1;
+  pOld->inCap_ = 0.008;
+  pNew->ty_ = BufNodeType::Buffer;
+  pNew->rat_ = 11.1;
+  pNew->inCap_ = 0.005;
+  dpSolver.MaintainFrontier(pNew, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  dpSolver.MaintainFrontier(pOld, rbt);
+  EXPECT_EQ(rbt.size(), 2);
+  EXPECT_EQ((*rbt.rbegin())->uid_, pNew->uid_);
 }
 
 bool CheckParetoFrontier(const DpSolver &dpSolver, BufNodeRbTree &rbt) {
@@ -129,7 +193,7 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomInCap) {
 
   // src->ty_ = BufNodeType::Buffer; // hack for testing
   // simple test
-  BufNodeRbTree rbt;
+  BufNodeRbTree rbt = dpSolver.CreateParetoFrontierKeeper();
   for (auto *node : src->TopologicalSort()) {
     node->loading_ = 0.1; // hack for testing
     dpSolver.MaintainFrontier(node, rbt);
@@ -148,7 +212,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
   DpSolver dpSolver(nodeMgr_, src, lib, lib.bufs_[2]);
 
   // simple test
-  BufNodeRbTree rbt;
+  BufNodeRbTree rbt = dpSolver.CreateParetoFrontierKeeper();
 
   auto *p1 = nodeMgr_.Alloc();
   p1->ty_ = BufNodeType::Init;
@@ -207,6 +271,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
   EXPECT_EQ(rbt.size(), 1);
   EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
 
+  auto *prev = p;
   // similar element
   p = nodeMgr_.Alloc();
   p->ty_ = BufNodeType::Init;
@@ -215,7 +280,7 @@ TEST_F(CpuTest, ParetoFrontierTest_Loading) {
   dpSolver.MaintainFrontier(p, rbt);
 
   EXPECT_EQ(rbt.size(), 1);
-  EXPECT_EQ((*rbt.begin())->uid_, p->uid_);
+  EXPECT_EQ((*rbt.begin())->uid_, prev->uid_);
 }
 
 TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
@@ -229,7 +294,7 @@ TEST_F(CpuTest, ParetoFrontierTest_RandomLoading) {
 
   // src->ty_ = BufNodeType::Buffer; // hack for testing
   // simple test
-  BufNodeRbTree rbt;
+  BufNodeRbTree rbt = dpSolver.CreateParetoFrontierKeeper();
   for (auto *node : src->TopologicalSort()) {
     node->ty_ = BufNodeType::Init;
     node->loading_ = node->inCap_; // hack for testing

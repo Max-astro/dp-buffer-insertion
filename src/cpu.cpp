@@ -230,6 +230,16 @@ void BufNode::ClearRemovedNodes() {
   }
 }
 
+uint32_t BufNode::CountBufDepth() const {
+  uint32_t depth = 0;
+
+  for (auto child : children_) {
+    depth = std::max(depth, child->CountBufDepth());
+  }
+
+  return depth + (ty_ == BufNodeType::Buffer);
+}
+
 std::vector<BufNode *> BufNode::TopologicalSort() const {
   std::vector<BufNode *> sorted;
   std::function<void(BufNode *)> dfs = [&](BufNode *node) {
@@ -247,7 +257,8 @@ BufNode *ClusterSolver::InsertBuffer(NodeGroup &group) {
 
   buf->ty_ = BufNodeType::Buffer;
   // buf->rat_ = group.rat_ - GetVirtualBufDelay();
-  buf->rat_ = group.rat_ - GetBufDelayByLoading(group.loading_);
+  float bufDly = GetBufDelayByLoading(group.loading_);
+  buf->rat_ = group.rat_ - bufDly;
   buf->inCap_ = GetVirtualBufCap();
   std::swap(group.sinks_, buf->children_);
 
@@ -262,7 +273,7 @@ BufNode *ClusterSolver::BuildBufferTree() {
   float loading = net_.inCap_;
 
   // use a heap to store the sinks
-  RatHeap maxHeap(NodeRatLT);
+  RatHeap maxHeap(ClusterNodeCmp);
   uint32_t sinkIdx = 0;
   for (auto &sink : net_.sinks_) {
     BufNode *node = nodeMgr_.AllocSink(sinkIdx++);
@@ -272,10 +283,15 @@ BufNode *ClusterSolver::BuildBufferTree() {
   }
 
   // buffer popped out sinks
-  const size_t FANOUT_LIMIT = 8;
   NodeGroup group;
   while (!maxHeap.empty()) {
     BufNode *node = maxHeap.top();
+    if (group.sinks_.size() > 1 && group.rat_ - node->rat_ > 2.0) {
+      BufNode *buf = InsertBuffer(group);
+      maxHeap.push(buf);
+      continue;
+    }
+
     maxHeap.pop();
     group.AddNode(node);
 
@@ -291,7 +307,53 @@ BufNode *ClusterSolver::BuildBufferTree() {
   src->rat_ = group.rat_;
   std::swap(src->children_, group.sinks_);
 
+  //
+  SinkWiseBuffer(src, true);
+
   return src;
+}
+
+void ClusterSolver::SinkWiseBuffer(BufNode *src, bool byGroup) {
+  for (auto node : src->TopologicalSort()) {
+    if (node->ty_ == BufNodeType::Sink) {
+      continue;
+    }
+
+    std::vector<BufNode *> sinks;
+    std::vector<BufNode *> nonSinks;
+    for (auto child : node->children_) {
+      if (child->ty_ == BufNodeType::Sink) {
+        sinks.push_back(child);
+      } else {
+        nonSinks.push_back(child);
+      }
+    }
+
+    if (sinks.empty() || sinks.size() == node->children_.size()) {
+      continue;
+    }
+
+    // keep non-sink children and reset load value
+    node->loading_ = 0.0;
+    std::swap(node->children_, nonSinks);
+
+    if (byGroup) {
+      NodeGroup group;
+      for (auto sink : sinks) {
+        group.AddNode(sink);
+      }
+      BufNode *buf = InsertBuffer(group);
+      node->AddChild(buf);
+    } else {
+      for (auto sink : sinks) {
+        NodeGroup group;
+        group.AddNode(sink);
+        BufNode *buf = InsertBuffer(group);
+        node->AddChild(buf);
+      }
+    }
+    assert(!node->children_.empty() && node->loading_ > 0.0);
+  }
 }
 
 DpSolver::BufNodeVec2 DpSolver::InitDp(const BufNode *node) {
@@ -408,7 +470,7 @@ BufNodeVec DpSolver::GenSolutionsByPhase(BufNodeVec &insertBuf,
                                          BufNodeVec &insertInv) {
   // All new solutions will be stored in the rbt
   // in order to keep the Pareto frontier easier.
-  BufNodeRbTree rbt;
+  BufNodeRbTree rbt = CreateParetoFrontierKeeper();
 
 #if ENABLE_ASSERT
   {
@@ -507,12 +569,13 @@ void DpSolver::MergeChildSolutions(BufNodeVec &srcSolutions,
     return;
   }
 
-  BufNodeRbTree merged;
+  BufNodeRbTree merged = CreateParetoFrontierKeeper();
   for (auto srcS : srcSolutions) {
     for (auto childS : childSolutions) {
       auto *dup = nodeMgr_.Dup(srcS);
       dup->AddChild(childS);
-      MaintainFrontier(dup, merged);
+      // MaintainFrontier(dup, merged);
+      merged.insert(dup);
     }
   }
 
@@ -592,6 +655,23 @@ BufNode *DpSolver::GetBestSolution() const {
   return best;
 }
 
+bool DpSolver::IsImproved(const NetData &net, const BufNode *result) const {
+  float oldRat = std::numeric_limits<float>::max();
+  float oldLoading = 0.0;
+  for (auto &sink : net.sinks_) {
+    oldRat = std::min(oldRat, sink.rat_);
+    oldLoading += sink.inputCap_;
+  }
+  float oldDelay = driverArc_.CalcAverageDelay(
+      driverTrans_.value_or(libCells_.GetDefaultTrans()), oldLoading);
+  oldRat -= oldDelay;
+
+  float newDelay = driverArc_.CalcAverageDelay(libCells_.GetDefaultTrans(),
+                                               result->loading_);
+  float newRat = result->rat_ - newDelay;
+  return newRat > oldRat;
+}
+
 void DpSolver::ReportImprovement(const NetData &net, const BufNode *result) {
   float oldRat = std::numeric_limits<float>::max();
   float oldLoading = 0.0;
@@ -607,9 +687,10 @@ void DpSolver::ReportImprovement(const NetData &net, const BufNode *result) {
                                                result->loading_);
 
   printf("Orignal Net's driver pin: RAT = %f, loading = %f, delay = %f;\n"
-         "After buffer insertion  : RAT = %f, loading = %f, delay = %f\n\n",
-         oldRat, oldLoading, oldDelay, result->rat_, result->loading_,
-         newDelay);
+         "After buffer insertion  : RAT = %f, loading = %f, delay = %f; diff = "
+         "%f\n\n",
+         oldRat, oldLoading, oldDelay, result->rat_, result->loading_, newDelay,
+         result->rat_ - oldRat);
 }
 
 SinkNode SinkNode::FromOTPin(const ot::Pin *pin) {
@@ -671,8 +752,8 @@ NetData NetData::FromTimer(const ot::Net *net) {
   float critSlack = std::min(rslack, fslack);
   ot::Tran critTran = ot::RISE;
 
-  std::cout << "toPin: " << toPin->name() << " rise slack: " << rslack << ", fall slack: " << fslack
-            << '\n';
+  // std::cout << "toPin: " << toPin->name() << " rise slack: " << rslack
+  //           << ", fall slack: " << fslack << '\n';
 
   // Find the critical fanin
   const ot::Pin *critFr = nullptr;
@@ -701,6 +782,7 @@ NetData NetData::FromTimer(const ot::Net *net) {
 void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
                                const std::string &driverName,
                                BufNode *solution) {
+  std::string prefix = "BUF_" + driverName;
   std::unordered_map<const BufNode *, std::string> nodePinMap;
   auto topoOrd = solution->TopologicalSort();
 
@@ -753,8 +835,8 @@ void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
     // 5. connect children's input pin to the net
 
     auto &libCellName = node->driver_->cell_->name;
-    std::string gateName = driverName + "_" + std::to_string(gateIdx);
-    std::string netName = driverName + "_net_" + std::to_string(gateIdx);
+    std::string gateName = prefix + "_" + std::to_string(gateIdx);
+    std::string netName = prefix + "_net_" + std::to_string(gateIdx);
 
     auto oPinName = node->ty_ == BufNodeType::Buffer
                         ? techLib.GetBufOutputPin()
@@ -793,21 +875,29 @@ float OtAPI::GetMaxDriverArcDelay(const ot::Net *net) {
   return maxDelay;
 }
 
-NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer) {
+bool OtAPI::IsHighFanoutNet(const ot::Net &net) {
   constexpr int HIGH_FANOUT_THRESHOLD = 20;
   constexpr float DELAY_THRESHOLD = 0.1;
+  if (net.num_pins() < HIGH_FANOUT_THRESHOLD) {
+    return false;
+  }
+  if (GetMaxDriverArcDelay(&net) < DELAY_THRESHOLD) {
+    return false;
+  }
+  return true;
+}
+
+NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer) {
 
   NetQueue netQueue;
   for (auto &&[name, net] : timer.nets()) {
     if (net.driver() && net.driver()->primary_input()) {
       continue;
     }
-    if (net.num_pins() < HIGH_FANOUT_THRESHOLD) {
+    if (!IsHighFanoutNet(net)) {
       continue;
     }
-    if (GetMaxDriverArcDelay(&net) < DELAY_THRESHOLD) {
-      continue;
-    }
+
     netQueue.push(&net);
   }
   return netQueue;
