@@ -109,41 +109,6 @@ void TechLib::InitLib() {
   }
 }
 
-Sky130BufInvLib::Sky130BufInvLib()
-    : lib_(read_lib(std::string("../sky130_fd_sc_hd__tt_025C_1v80.lib"))),
-      bufs_(), invs_() {
-
-  for (auto sz : SIZES) {
-    std::string name = BUF_NAME + std::to_string(sz);
-    auto cell = get_cell(*lib_, std::move(name));
-    auto rise = get_timing_table(*cell, std::string(INPUT_PIN),
-                                 std::string(BUF_OUTPUT_PIN), true);
-    auto fall = get_timing_table(*cell, std::string(INPUT_PIN),
-                                 std::string(BUF_OUTPUT_PIN), false);
-
-    float inCap = get_pin_capacitance(*cell, std::string(INPUT_PIN));
-    BufLibCell buf(name, TimingArc(INPUT_PIN, std::move(rise), std::move(fall)),
-                   inCap);
-    // printf("buf: %s, inCap: %f\n", name.c_str(), inCap);
-    bufs_.emplace_back(std::move(buf));
-  }
-
-  for (auto sz : SIZES) {
-    std::string name = INV_NAME + std::to_string(sz);
-    auto cell = get_cell(*lib_, std::move(name));
-    auto rise = get_timing_table(*cell, std::string(INPUT_PIN),
-                                 std::string(INV_OUTPUT_PIN), true);
-    auto fall = get_timing_table(*cell, std::string(INPUT_PIN),
-                                 std::string(INV_OUTPUT_PIN), false);
-
-    float inCap = get_pin_capacitance(*cell, std::string(INPUT_PIN));
-    BufLibCell inv(name, TimingArc(INPUT_PIN, std::move(rise), std::move(fall)),
-                   inCap);
-    // printf("inv: %s, inCap: %f\n", name.c_str(), inCap);
-    invs_.emplace_back(std::move(inv));
-  }
-}
-
 void BufNode::EmitDOT(const char *filename) const {
   std::ofstream os(filename, std::ofstream::out);
 

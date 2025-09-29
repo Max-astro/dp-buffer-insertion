@@ -11,8 +11,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "liberty_helper.rs.h"
-
 // #include <ot/timer/timer.hpp>
 
 #pragma push_macro("DEBUG")
@@ -22,53 +20,8 @@
 #include <ot/timer/timer.hpp>
 #pragma pop_macro("DEBUG")
 
-using LibPtr = rust::Box<LibDb>;
-using TimingTbl2DPtr = rust::Box<TimingTbl2D>;
 
 enum class DelayType { Rise, Fall };
-
-// Consider single output cell only
-struct TimingArc {
-  std::string ipin_;
-  std::array<TimingTbl2DPtr, 2> tbl_; // 0: rise, 1: fall
-
-  TimingArc(std::string ipin, TimingTbl2DPtr riseTbl, TimingTbl2DPtr fallTbl)
-      : ipin_(std::move(ipin)), tbl_({std::move(riseTbl), std::move(fallTbl)}) {
-  }
-
-  double CalcDelay(DelayType ty, double trans, double loading) const {
-    if (ty == DelayType::Rise) {
-      return lookup(*tbl_[0], trans, loading);
-    } else {
-      return lookup(*tbl_[1], trans, loading);
-    }
-  }
-};
-
-// Libcells only has one timing arc
-struct BufLibCell {
-  static constexpr float DEFAULT_TRANS = 0.01;
-
-  std::string name_;
-  TimingArc arcs_;
-  float inCap_;
-
-  BufLibCell(std::string name, TimingArc arc, float inCap)
-      : name_(std::move(name)), arcs_(std::move(arc)), inCap_(inCap) {}
-
-  float CalcDelay(DelayType ty, double trans, double loading) const {
-    return arcs_.CalcDelay(ty, trans, loading);
-  }
-
-  // const TimingArc &GetArc(const char *ipin) const {
-  //   for (auto &arc : arcs_) {
-  //     if (arc.ipin_ == ipin) {
-  //       return arc;
-  //     }
-  //   }
-  //   assert(false && "Timing arc not found");
-  // }
-};
 
 struct OTTimingArc {
   const ot::Cell *cell_;
@@ -160,30 +113,6 @@ struct Sky130Lib : public TechLib {
 
   // For testing
   static void InitMockTimer(ot::Timer &timer);
-};
-
-// TODO: support other liberty files
-struct Sky130BufInvLib {
-  LibPtr lib_; // For managing liberty's memory allocated from Rust
-  std::vector<BufLibCell> bufs_;
-  std::vector<BufLibCell> invs_;
-
-  // sky130 lib
-  static constexpr const char *BUF_NAME = "sky130_fd_sc_hd__buf_";
-  static constexpr const char *INV_NAME = "sky130_fd_sc_hd__inv_";
-  static constexpr const char *INPUT_PIN = "A";
-  static constexpr const char *BUF_OUTPUT_PIN = "X";
-  static constexpr const char *INV_OUTPUT_PIN = "Y";
-
-  constexpr static const int SIZES[] = {1, 2, 4, 6, 8, 12, 16};
-
-  // For measuring minimum delay interval
-  static constexpr float minDelay_ = 0.005;
-  static constexpr float minCap_ = 0.001;
-
-  static constexpr float DEFAULT_TRANS = 0.01;
-
-  Sky130BufInvLib();
 };
 
 enum class BufNodeType {
