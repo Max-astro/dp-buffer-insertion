@@ -76,7 +76,8 @@ struct Nangate45Lib : public TechLib {
   const char *GetBufOutputPin() const override { return "Z"; }
   const char *GetInvOutputPin() const override { return "ZN"; }
 
-  const std::vector<int> bufInvSize_ = {1, 2, 4, 8, 16, 32};
+  // const std::vector<int> bufInvSize_ = {1, 2, 4, 8, 16, 32};
+  const std::vector<int> bufInvSize_ = {1, 2, 4, 8};
   const std::vector<int> &GetBufSizes() const override { return bufInvSize_; }
   const std::vector<int> &GetInvSizes() const override { return bufInvSize_; }
 
@@ -567,12 +568,38 @@ struct NetComparator {
   }
 };
 
-using NetQueue =
-    std::priority_queue<const ot::Net *, std::vector<const ot::Net *>,
-                        NetComparator>;
+struct NetSlackComparator {
+  bool operator()(const ot::Net *a, const ot::Net *b) const {
+    auto AvgSlack = [](const ot::Net *net) -> float {
+      auto rslack = net->driver()->slack(ot::MAX, ot::RISE);
+      auto fslack = net->driver()->slack(ot::MAX, ot::FALL);
+      if (rslack.has_value() && fslack.has_value()) {
+        return (rslack.value() + fslack.value()) / 2.0;
+      } else if (rslack.has_value()) {
+        return rslack.value();
+      } else if (fslack.has_value()) {
+        return fslack.value();
+      }
+      return 0.0;
+    };
+
+    return AvgSlack(a) < AvgSlack(b);
+  }
+};
 
 struct OtAPI {
+  struct NetDriverArcDelayComparator {
+    bool operator()(const ot::Net *a, const ot::Net *b) const {
+      return GetMaxDriverArcDelay(a) < GetMaxDriverArcDelay(b);
+    }
+  };
+
+  using NetQueue =
+      std::priority_queue<const ot::Net *, std::vector<const ot::Net *>,
+                          NetDriverArcDelayComparator>;
+
   static float GetMaxDriverArcDelay(const ot::Net *net);
   static bool IsHighFanoutNet(const ot::Net &net);
-  static NetQueue CollectHighFanoutNets(const ot::Timer &timer);
+  static NetQueue CollectHighFanoutNets(const ot::Timer &timer,
+                                        float slackThreshold);
 };

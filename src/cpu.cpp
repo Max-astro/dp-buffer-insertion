@@ -768,8 +768,8 @@ void NetData::CommitBufferTree(ot::Timer &timer, const TechLib &techLib,
   solution->ClearRemovedNodes();
 
   auto tmp = solution->TopologicalSort();
-  printf("Total node: %zu, removedCount = %d, remainCount = %zu\n",
-         topoOrd.size(), removedCount, tmp.size());
+  // printf("Total node: %zu, removedCount = %d, remainCount = %zu\n",
+  //        topoOrd.size(), removedCount, tmp.size());
 
   // preprocess: remove the removed nodes
 
@@ -848,25 +848,29 @@ float OtAPI::GetMaxDriverArcDelay(const ot::Net *net) {
 }
 
 bool OtAPI::IsHighFanoutNet(const ot::Net &net) {
-  constexpr int HIGH_FANOUT_THRESHOLD = 20;
-  constexpr float DELAY_THRESHOLD = 0.1;
-  if (net.num_pins() < HIGH_FANOUT_THRESHOLD) {
-    return false;
-  }
+  constexpr int HIGH_FANOUT_THRESHOLD = 10;
+  constexpr float DELAY_THRESHOLD = 0.7;
   if (GetMaxDriverArcDelay(&net) < DELAY_THRESHOLD) {
+    return true;
+  }
+  if (net.num_pins() < HIGH_FANOUT_THRESHOLD) {
     return false;
   }
   return true;
 }
 
-NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer) {
-
+OtAPI::NetQueue OtAPI::CollectHighFanoutNets(const ot::Timer &timer,
+                                             float slackThreshold) {
   NetQueue netQueue;
   for (auto &&[name, net] : timer.nets()) {
     if (!net.driver()) {
       continue;
     }
     if (net.driver()->primary_input()) {
+      continue;
+    }
+    if (net.driver()->slack(ot::MAX, ot::RISE).value_or(0.0) > slackThreshold &&
+        net.driver()->slack(ot::MAX, ot::FALL).value_or(0.0) > slackThreshold) {
       continue;
     }
     if (!IsHighFanoutNet(net)) {

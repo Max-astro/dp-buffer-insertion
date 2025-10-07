@@ -2,6 +2,8 @@
 #include <cstring>
 #include <fstream>
 
+#include <ot/taskflow/taskflow.hpp>
+
 void InitTimer(ot::Timer &timer, const char *lpath, const char *vpath) {
   using namespace ot;
   // the first step is to read a library.
@@ -160,7 +162,7 @@ void DisplayCriticalPathBuffering(ot::Timer &timer, const TechLib &lib) {
 
     // -------------- Optimized timing report ----------------
     timer.update_timing();
-    timer.dump_timer(std::cout);
+    // timer.dump_timer(std::cout);
     std::cout << "\n\n-------------- Optimized timing report --------------\n";
 
     std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
@@ -177,7 +179,8 @@ void DisplayCriticalPathBuffering(ot::Timer &timer, const TechLib &lib) {
 }
 
 void DisplayHFSBuffering(ot::Timer &timer, const TechLib &lib) {
-  auto netQue = OtAPI::CollectHighFanoutNets(timer);
+  auto netQue =
+      OtAPI::CollectHighFanoutNets(timer, *timer.report_wns({ot::MAX}));
   auto net = netQue.top();
   NetData netData = NetData::FromTimer(net);
   NodeMgr nodeMgr(netData.sinks_.size() * 100);
@@ -237,6 +240,149 @@ void ParseArgs(int argc, char **argv) {
   }
 }
 
+int InsertBufferParallel(const std::vector<const ot::Net *> &nets_to_buffer,
+                         const TechLib &lib, ot::Timer &timer) {
+  tf::Taskflow taskflow;
+  tf::Executor executor(16);
+
+  std::mutex mutex;
+  int improved = 0;
+  for (int i = 0; i < nets_to_buffer.size(); i++) {
+    taskflow.emplace([&, idx = i]() {
+      auto net = nets_to_buffer[idx];
+      auto netData = NetData::FromTimer(net);
+      NodeMgr nodeMgr(netData.sinks_.size() * 100);
+
+      const OTTimingArc &defaultBuf = lib.bufs_[2];
+      ClusterSolver solver(nodeMgr, netData, defaultBuf);
+      BufNode *src = solver.BuildBufferTree();
+      // src->EmitDOT("nand45_src.dot");
+
+      DpSolver dpSolver(nodeMgr, src, lib, netData.driverArc_);
+      dpSolver.SetDriverTrans(netData.driverTrans_);
+      dpSolver.Solve();
+
+      auto *bestSolution = dpSolver.GetBestSolution();
+      if (dpSolver.IsImproved(netData, bestSolution)) {
+        std::lock_guard<std::mutex> lock(mutex);
+        netData.CommitBufferTree(timer, lib, net->name(), bestSolution);
+        improved++;
+      }
+    });
+  }
+
+  executor.run(taskflow).wait();
+  return improved;
+}
+
+void HighFanoutStrategy(ot::Timer &timer, const TechLib &lib,
+                        std::unordered_set<std::string> &bufferedNets,
+                        int loopLimit) {
+  int loop = 0;
+  int improved = 1;
+  while (loop < loopLimit && improved > 0) {
+    float wns = *timer.report_wns({ot::MAX});
+    if (wns > 0.0) {
+      return;
+    }
+    auto netQue = OtAPI::CollectHighFanoutNets(timer, wns * 0.7);
+
+    std::vector<const ot::Net *> nets_to_buffer;
+    nets_to_buffer.reserve(256);
+    // std::cout << "High fanout nets num: " << netQue.size() << '\n';
+    if (netQue.empty()) {
+      break;
+    }
+
+    int cnt = 0;
+    while (!netQue.empty() && cnt < 200) {
+      auto net = netQue.top();
+      netQue.pop();
+      if (bufferedNets.count(net->name())) {
+        continue;
+      }
+      bufferedNets.emplace(net->name());
+
+      // std::cout << "Buffering net: " << net->name()
+      //           << ", fanout: " << net->num_pins() << ", slack: "
+      //           << net->driver()->slack(ot::MAX, ot::RISE).value() << ", "
+      //           << net->driver()->slack(ot::MAX, ot::FALL).value()
+      //           << ", Delay: " << OtAPI::GetMaxDriverArcDelay(net) << '\n';
+
+      nets_to_buffer.push_back(net);
+
+      cnt++;
+    }
+
+    improved = InsertBufferParallel(nets_to_buffer, lib, timer);
+
+    std::cout << "\n\n-------------- Fanout based buffering loop: " << loop
+              << " --------------\n";
+    timer.update_timing();
+    // timer.dump_timer(std::cout);
+    std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+    std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+    {
+      auto paths = timer.report_timing(1, ot::MAX);
+      std::cout << "# Critical Path Buf Delay: " << GetBufDelayOnPath(paths[0])
+                << '\n';
+      // for (size_t i = 0; i < paths.size(); ++i) {
+      //   std::cout << "----- Critical Path -----\n";
+      //   std::cout << paths[i] << '\n';
+      // }
+    }
+
+    loop++;
+    std::cout << std::endl;
+    std::cout << std::flush;
+  }
+}
+
+void CriticalPathStrategy(ot::Timer &timer, const TechLib &lib,
+                          std::unordered_set<std::string> &bufferedNets,
+                          int loopLimit) {
+  int loop = 0;
+  int improved = 1;
+  while (loop < loopLimit && improved > 0) {
+    auto paths = timer.report_timing(20, ot::MAX);
+    std::vector<const ot::Net *> nets_to_buffer;
+    nets_to_buffer.reserve(256);
+    for (auto &&p : paths) {
+      for (auto &&point : p) {
+        if (point.pin.is_input() || point.pin.primary_output()) {
+          continue;
+        }
+        auto net = point.pin.net();
+        if (!OtAPI::IsHighFanoutNet(*net)) {
+          continue;
+        }
+        if (bufferedNets.count(net->name())) {
+          continue;
+        }
+
+        bufferedNets.emplace(net->name());
+        nets_to_buffer.push_back(net);
+      }
+    }
+
+    improved = InsertBufferParallel(nets_to_buffer, lib, timer);
+
+    std::cout << "\n\n-------------- Path based buffering loop: " << loop
+              << " --------------\n";
+    timer.update_timing();
+    timer.dump_timer(std::cout);
+    std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
+    std::cout << "Optimized Area: " << *timer.report_area() << '\n';
+    {
+      auto paths = timer.report_timing(1, ot::MAX);
+      std::cout << "# Critical Path Buf Delay: " << GetBufDelayOnPath(paths[0])
+                << '\n';
+    }
+
+    loop++;
+  }
+}
+
 int main(int argc, char **argv) {
   ParseArgs(argc, argv);
   // Check required arguments
@@ -260,107 +406,22 @@ int main(int argc, char **argv) {
   std::cout << "Init WNS: " << *timer.report_wns({ot::MAX}) << '\n';
   std::cout << "Area: " << *timer.report_area() << '\n';
 
-  auto paths = timer.report_timing(1, ot::MAX);
-  for (size_t i = 0; i < paths.size(); ++i) {
-    std::cout << "----- Critical Path " << i << " -----\n";
-    std::cout << paths[i] << '\n';
-  }
+  // auto paths = timer.report_timing(1, ot::MAX);
+  // for (size_t i = 0; i < paths.size(); ++i) {
+  //   std::cout << "----- Critical Path " << i << " -----\n";
+  //   std::cout << paths[i] << '\n';
+  // }
 
   Nangate45Lib lib(timer);
   std::unordered_set<std::string> bufferedNets;
 
-  // // Strategy 1: buffing high fanout nets
-  // int loop = 0;
-  // while (loop < 30) {
-  //   auto netQue = OtAPI::CollectHighFanoutNets(timer);
-  //   std::cout << "High fanout nets num: " << netQue.size() << '\n';
-  //   if (netQue.empty()) {
-  //     break;
-  //   }
-  //   int cnt = 0;
-  //   while (!netQue.empty() && cnt < 30) {
-  //     auto net = netQue.top();
-  //     netQue.pop();
-  //     if (bufferedNets.count(net->name())) {
-  //       continue;
-  //     }
-  //     bufferedNets.emplace(net->name());
+  // main opt flow
+  for (int i = 0; i < 2; i++) {
+    // Strategy 1: buffing critical paths
+    CriticalPathStrategy(timer, lib, bufferedNets, 5);
 
-  //     BufferHighFanoutNets(timer, net, lib);
-  //     std::cout << "Buffering net: " << net->name()
-  //               << ", fanout: " << net->num_pins() << ", slack: "
-  //               << net->driver()->slack(ot::MAX, ot::RISE).value() << ", "
-  //               << net->driver()->slack(ot::MAX, ot::FALL).value() << '\n';
-  //     cnt++;
-  //   }
-
-  //   std::cout << "\n\n-------------- Buffering loop: " << loop
-  //             << " --------------\n";
-  //   timer.update_timing();
-  //   timer.dump_timer(std::cout);
-  //   std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
-  //   std::cout << "Optimized Area: " << *timer.report_area() << '\n';
-  //   {
-  //     auto paths = timer.report_timing(1, ot::MAX);
-  //     std::cout << "# Critical Path Buf Delay: " <<
-  //     GetBufDelayOnPath(paths[0])
-  //               << '\n';
-  //     for (size_t i = 0; i < paths.size(); ++i) {
-  //       std::cout << "----- Critical Path -----\n";
-  //       std::cout << paths[i] << '\n';
-  //     }
-  //   }
-  //   loop++;
-  // }
-
-  // Strategy 2: buffing critical paths
-  int loop = 0;
-  while (loop < 30) {
-    auto paths = timer.report_timing(10, ot::MAX);
-    for (auto &&p : paths) {
-      for (auto &&point : p) {
-        if (point.pin.is_input() || point.pin.primary_output()) {
-          continue;
-        }
-        auto net = point.pin.net();
-        if (!OtAPI::IsHighFanoutNet(*net)) {
-          continue;
-        }
-        if (bufferedNets.count(net->name())) {
-          continue;
-        }
-        std::cout << "Buffering net: " << net->name()
-                  << ", fanout: " << net->num_pins() << ", slack: "
-                  << net->driver()->slack(ot::MAX, ot::RISE).value() << ", "
-                  << net->driver()->slack(ot::MAX, ot::FALL).value() << '\n';
-
-        bufferedNets.emplace(net->name());
-        bool improved = BufferHighFanoutNets(timer, net, lib);
-        // if (improved) {
-        //   std::cout << "Timing improved, commited to timer\n\n";
-        // } else {
-        //   std::cout << "Timing not improved\n\n";
-        // }
-      }
-    }
-
-    std::cout << "\n\n-------------- Buffering loop: " << loop
-              << " --------------\n";
-    timer.update_timing();
-    timer.dump_timer(std::cout);
-    std::cout << "Optimized WNS: " << *timer.report_wns({ot::MAX}) << '\n';
-    std::cout << "Optimized Area: " << *timer.report_area() << '\n';
-    {
-      auto paths = timer.report_timing(1, ot::MAX);
-      std::cout << "# Critical Path Buf Delay: " << GetBufDelayOnPath(paths[0])
-                << '\n';
-      for (size_t i = 0; i < paths.size(); ++i) {
-        std::cout << "----- Critical Path -----\n";
-        std::cout << paths[i] << '\n';
-      }
-    }
-
-    loop++;
+    // // Strategy 2: buffing high fanout nets
+    // HighFanoutStrategy(timer, lib, bufferedNets, 5);
   }
 
   std::cout << "Final WNS: " << *timer.report_wns({ot::MAX}) << '\n';
