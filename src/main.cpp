@@ -344,7 +344,7 @@ void CriticalPathStrategy(ot::Timer &timer, const TechLib &lib,
   int loop = 0;
   int improved = 1;
   while (loop < loopLimit && improved > 0) {
-    auto paths = timer.report_timing(20, ot::MAX);
+    auto paths = timer.report_timing(30, ot::MAX);
     std::vector<const ot::Net *> nets_to_buffer;
     nets_to_buffer.reserve(256);
     for (auto &&p : paths) {
@@ -418,7 +418,7 @@ int main(int argc, char **argv) {
   // main opt flow
   for (int i = 0; i < 2; i++) {
     // Strategy 1: buffing critical paths
-    CriticalPathStrategy(timer, lib, bufferedNets, 5);
+    CriticalPathStrategy(timer, lib, bufferedNets, 8);
 
     // // Strategy 2: buffing high fanout nets
     // HighFanoutStrategy(timer, lib, bufferedNets, 5);
